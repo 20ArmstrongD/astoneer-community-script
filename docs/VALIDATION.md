@@ -5,7 +5,7 @@ no LXC was created and no game, Docker image or Playit tunnel was executed.
 
 Executed locally:
 
-- `python3 -m unittest discover -s tests -v`: 28 offline tests passed.
+- `python3 -m unittest discover -s tests -v`: 56 offline tests passed after the image-selection fix.
 - `python3 -m py_compile scripts/*.py`: passed.
 - `bash -n install.sh install/astroneer-install.sh scripts/astroneer`: passed.
 
@@ -35,3 +35,21 @@ Public release blockers:
 - For an upstream contribution, adapt to the current core wizard and submit to
   DevScripts with its required metadata and real-host results. This standalone
   repository is not a ready-to-merge Community Scripts PR.
+
+## Image selection regression validation
+
+The reported PVE 9.0.3 / Debian 12 deployment stopped before CT creation because
+manual image-digest input failed validation. This is evidence of wizard execution,
+not of a successful guest/game deployment. The revised wizard resolves and verifies
+registry metadata itself and requires explicit approval. Tests use synthetic
+manifest/config bytes and compute fixture hashes; they contain no fabricated release
+pins. Coverage includes multiarch selection, digest/header/config/size tampering,
+wrong/missing architecture, malformed metadata, network errors, response bounds,
+HTTPS redirects/token handling, approval refusal, the default wizard, all network
+modes and guest Docker inspect matching.
+
+Local real-registry lookup: blocked by DNS. Local Docker info: socket permission
+denied. No build, pull, new CT, live host access or real game test was performed.
+See IMAGES.md for the distinction between documented publication and current live
+registry/artifact availability. The newly selected image still needs real-host
+acceptance testing; no reproducible source-build claim is made.

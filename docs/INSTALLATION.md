@@ -8,13 +8,14 @@ run against an existing guest ID. No automated deployment occurred during develo
 
 1. Obtain the project from its trusted publisher. Verify a reviewed full Git commit
    using your organization's signature/checksum process, detach checkout at that SHA,
-   inspect the installer and run offline tests. No public release exists yet.
-2. On a separate trusted Docker machine, review the upstream image source and build
-   provenance. Pull the exact approved tag and record its RepoDigest using
-   `docker image inspect --format '{{json .RepoDigests}}' APPROVED_IMAGE_TAG`.
-   Check encryption support, steam user, entrypoint, Steam install script and runtime
-   version in that actual image. A digest identifies content; it does not establish trust.
-   Supply the full `barumel/docker-astroneer-server@sha256:...` string to the wizard.
+   inspect the installer and run offline tests. Use the reviewed commit for this change; do not assume a floating branch has been reviewed.
+2. Review [image selection](IMAGES.md). The wizard contacts Docker Hub over verified
+   HTTPS, resolves a publisher tag (default latest), verifies manifest/config hashes
+   and linux/amd64 architecture, and displays the source and immutable reference.
+   Type APPROVE only if you trust that publisher/image. You do not need to install
+   Docker on Proxmox or manually find a digest. Registry rate limits, missing tags,
+   DNS/TLS errors and missing amd64 images cause a clear failure before CT creation.
+   No fallback image, insecure registry or unpinned source is used.
 3. On Proxmox, run `pveversion`, `pveam list local`, `pvesm status` and
    `ip link show vmbr0`. Choose a trusted template already downloaded through pveam.
 4. From the reviewed checkout run:
@@ -25,7 +26,10 @@ run against an existing guest ID. No automated deployment occurred during develo
 
    Select a free CT ID, appropriate storage and bridge. DHCP is the default;
    static mode requires IPv4 CIDR and gateway. Choose direct, playit or lan and
-   enter the actual advertised IPv4 and external port. LAN is experimental.
+   enter the endpoint requested for that mode. Direct requires your public IPv4 and
+   matching forwarded UDP port. Playit requires the assigned public IPv4 and actual
+   external UDP port; set the local game/tunnel origin to that same port. LAN asks
+   only for the CT LAN address and local UDP port, with no public endpoint prompt. LAN is experimental.
    Use a new game password, not an account password. Secrets are entered without echo.
 5. After completion, substitute the ID you selected in these commands:
 
@@ -71,3 +75,27 @@ mode/agent identity migration is deliberately refused and needs manual service r
 The host wizard does not modify firewall policies or create port-forwarding rules.
 No automatic CT cleanup occurs after failure. Keep its ID, inspect the cause and
 repair or remove that disposable guest only with an administrator's explicit decision.
+
+## Retrying the reported PVE 9.0.3 setup
+
+The reported digest-validation failure happened in the wizard, before CT creation.
+Check `pct list` and `qm list` yourself before selecting an ID; the installer refuses
+existing IDs. **It cannot resume or overwrite CT 105.** If 105 already exists,
+leave it intact and choose another unused ID for a new test.
+
+On your authorized host, update your reviewed checkout and select the commit from
+the change report, then run:
+
+```bash
+git fetch origin
+git switch --detach REVIEWED_COMMIT_SHA
+pveam list local
+bash ./install.sh --advanced --template EXACT_DEBIAN_12_TEMPLATE_VOLUME_ID
+```
+
+Choose 105 only if unused, hostname astroneer, storage `vmdata-pool`, bridge `vmbr0`,
+2 cores, 4096 MiB RAM, 1024 MiB swap and 30 GiB disk. At image selection press Enter
+for latest (or enter an approved release tag). Review the resolved Docker Hub source,
+platform and digest and type APPROVE. Complete the mode-specific network prompts,
+review the CT summary, then type CREATE. These are operator instructions; no live
+host was accessed while developing the fix. Repeat the acceptance steps above.

@@ -4,8 +4,8 @@ set -euo pipefail
   echo 'Run as root' >&2
   exit 1
 }
-[[ $# -eq 1 && -f $1 ]] || {
-  echo 'Usage: astroneer-install.sh CONFIG.json' >&2
+[[ $# -ge 1 && $# -le 2 && -f $1 ]] || {
+  echo 'Usage: astroneer-install.sh CONFIG.json [PROVENANCE.json]' >&2
   exit 2
 }
 # shellcheck source=/dev/null
@@ -25,4 +25,8 @@ install -d -m 700 /etc/astroneer /var/lib/astroneer /var/backups/astroneer
 install -d -m 755 /usr/local/lib/astroneer
 install -m 755 "$ROOT/scripts/astroneer" /usr/local/bin/astroneer
 install -m 644 "$ROOT/scripts/manage.py" /usr/local/lib/astroneer/manage.py
-python3 /usr/local/lib/astroneer/manage.py provision "$1"
+if [[ $# -eq 2 ]]; then
+  python3 /usr/local/lib/astroneer/manage.py provision "$1" --provenance "$2"
+else
+  python3 /usr/local/lib/astroneer/manage.py provision "$1"
+fi

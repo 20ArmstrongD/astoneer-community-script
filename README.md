@@ -9,11 +9,10 @@ Targets: Proxmox VE 8/9, Debian 12/13 amd64, IPv4, systemd. Defaults: 2 cores,
 4096 MiB RAM, 1024 MiB swap, 30 GiB disk, UDP 8777. Actual compatibility is pending
 [deployment testing](docs/INSTALLATION.md). ARM is not supported.
 
-Obtain this repository from its eventual trusted publisher and check out a reviewed
-full commit SHA in detached mode (`git switch --detach FULL_COMMIT_SHA`). Verify the
-publisher's signature/checksum through a separate trusted channel and inspect the
-files before running them as root. There is no published repository URL or release
-yet; this document deliberately supplies no fabricated download command.
+Clone [20ArmstrongD/astoneer-community-script](https://github.com/20ArmstrongD/astoneer-community-script)
+and check out a reviewed full commit SHA in detached mode (`git switch --detach FULL_COMMIT_SHA`).
+Verify the publisher's signature/checksum through a separate trusted channel and
+inspect the files before running them as root.
 
 On a Proxmox host, after reviewing the [installation procedure](docs/INSTALLATION.md):
 
@@ -30,7 +29,13 @@ The template above illustrates the format; it is not a claim that this version i
 available. Supply an existing template. Default setup uses local-lvm and vmbr0;
 advanced setup configures CT ID, storage, hostname, CPU, RAM, swap, disk, bridge,
 DHCP/static IPv4, VLAN and DNS. Both modes ask for game identity, hidden password,
-boot policy, a reviewed runtime image digest and network endpoint. No existing
+boot policy and network endpoint. The wizard resolves the publisher image tag
+(default `latest`) from Docker Hub, verifies SHA-256 metadata and linux/amd64,
+displays source/registry/digest/runtime metadata, and requires typing `APPROVE`.
+No manual digest lookup or Docker installation on the Proxmox host is needed.
+The approved immutable platform digest, rather than the moving tag, is installed.
+Registry lookup failure or refusal stops before CT creation. Playit uses the same
+approval flow against its official GHCR repository. No existing
 CT/VM is modified; failed new guests are retained for inspection. Host installation
 is interactive. Guest provisioning accepts a private JSON file for automation.
 
@@ -94,5 +99,11 @@ ShellCheck and shfmt. See [validation record](docs/VALIDATION.md) for what actua
 Original wrapper code is MIT licensed. Astroneer belongs to System Era; Steam,
 Proton/Wine, Playit and container components retain their own licenses and terms.
 No game binaries or third-party implementation source are redistributed here.
+Initial selection provenance is retained root-only in
+`/etc/astroneer/image-provenance.json`; it records the original approved selection,
+not a guarantee that later manual updates use the same image. Registry hashes
+verify identity, not signatures or source correspondence. See
+[image selection](docs/IMAGES.md) for verification and network requirements.
+
 Thanks to barumel, JoeJoeTV, tteck and Community Scripts. This repository is not
 an official Community Scripts installer. A framework port must begin in DevScripts.

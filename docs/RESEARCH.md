@@ -44,3 +44,10 @@ targets pending the deployment matrix; neither version combination is certified.
 A public release must record full source SHAs, verified image digests, licenses,
 Debian package/runtime versions and real-host results. Examples intentionally reject
 missing digests. This is safer than inventing a functioning release pin.
+
+## Image-selection follow-up
+
+The manual-digest blocker and updated Docker Hub/GHCR lookup protocol are documented
+in [IMAGES.md](IMAGES.md). That follow-up supersedes the earlier manual-selection
+instructions; exact current registry digests are still discovered at runtime rather
+than fabricated in this repository.

@@ -9,7 +9,8 @@ and no tunnel is purchased or provisioned by this installer.
    [Docker agent wizard](https://playit.gg/account/setup/wizard/new-account/docker/docker-name)
    to associate an agent with your account. Keep its generated secret private.
 2. Obtain and review the supported Linux agent image from the official project.
-   Record its immutable `ghcr.io/playit-cloud/playit-agent@sha256:...` digest.
+   The wizard resolves a tag from that GHCR repository, verifies linux/amd64 and
+   content hashes, displays its immutable digest, and asks you to type APPROVE.
    The browser's latest release resolved to v1.2.0 during research; do not assume
    a floating container tag matches a release without checking provenance.
 3. Create a **Custom UDP** tunnel in the dashboard. Record its actual public IPv4
@@ -20,7 +21,7 @@ and no tunnel is purchased or provisioned by this installer.
    The game shares the guest network namespace with the agent. Set the game's
    local port to that same number; the default 8777 is not guaranteed by Playit.
 5. Select playit in the host wizard. Enter that exact assigned IPv4 and external
-   port, the same local port, reviewed agent image and hidden agent secret.
+   port, the same local port, approved agent image and hidden agent secret.
    A mismatch fails validation. The agent secret is stored root-only at
    `/etc/astroneer/playit-secret`, mounted read-only; no secret appears in argv.
 6. Verify `systemctl status astroneer-playit` and `ss -lun` inside the guest.

@@ -17,7 +17,7 @@ import sys
 import tarfile
 import tempfile
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 BASE = Path('/var/lib/astroneer')
 CONF = Path('/etc/astroneer/config.json')
 BACK = Path('/var/backups/astroneer')
@@ -68,7 +68,9 @@ def validate(c):
             raise ValueError(f'{k}: expected integer {low}..{high}')
     if type(c['autostart']) is not bool or c['mode'] not in ('direct', 'playit', 'lan'):
         raise ValueError('Invalid autostart or networking mode')
-    ipaddress.IPv4Address(c['public_ip'])
+    address = ipaddress.IPv4Address(c['public_ip'])
+    if address.is_loopback or address.is_multicast or address.is_unspecified or address.is_reserved or address.is_link_local:
+        raise ValueError('Advertised endpoint must be an assigned unicast IPv4, not loopback/link-local/reserved')
     if c['external_port'] != c['port']:
         raise ValueError('Different advertised and local ports are not supported by this installer')
     if c['mode'] != 'lan' and not ipaddress.ip_address(c['public_ip']).is_global:
@@ -141,8 +143,44 @@ def apply(c):
     atomic(CONF, json.dumps(c, indent=2) + '\n')
 
 
-def provision(path):
+def pull_verified(image, proof=None):
+    # Docker verifies downloaded layers; independently inspect platform and the
+    # selected immutable reference before running any publisher entrypoint.
+    run(['docker', 'pull', '--platform', 'linux/amd64', image])
+    info = json.loads(run(['docker', 'image', 'inspect', image]).stdout)
+    if not isinstance(info, list) or len(info) != 1:
+        raise ValueError('Docker did not return exactly one image')
+    info = info[0]
+    if info.get('Os') != 'linux' or info.get('Architecture') != 'amd64':
+        raise ValueError('Pulled image must be linux/amd64')
+    names = info.get('RepoDigests') or []
+    if image not in names and 'docker.io/' + image not in names:
+        raise ValueError('Pulled image RepoDigests does not contain the approved immutable reference')
+    if proof is not None:
+        if proof.get('image') != image or proof.get('approved') is not True or proof.get('platform') != 'linux/amd64' or proof.get('config_digest') != info.get('Id'):
+            raise ValueError('Pulled image does not match approved provenance/config digest')
+    return {'image': image, 'config_digest': info.get('Id'), 'platform': 'linux/amd64',
+            'verified_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+
+
+def read_provenance(path, c):
+    if path is None:
+        return None
+    proof = json.loads(Path(path).read_text())
+    if not isinstance(proof, dict):
+        raise ValueError('Image provenance must be a JSON object')
+    for key, image in [('game', c['image']), ('playit', c['playit_image'])]:
+        record = proof.get(key)
+        if not image and record is None:
+            continue
+        if not isinstance(record, dict) or record.get('image') != image or record.get('approved') is not True or record.get('platform') != 'linux/amd64' or not re.fullmatch(r'sha256:[a-f0-9]{64}', str(record.get('config_digest', ''))):
+            raise ValueError('Missing or mismatched approved image provenance')
+    return proof
+
+
+def provision(path, provenance_path=None):
     c = validate(json.loads(Path(path).read_text()))
+    proof = read_provenance(provenance_path, c)
     if CONF.exists():
         if load() != c:
             raise ValueError('Already installed with different configuration; use astroneer config FILE')
@@ -150,7 +188,7 @@ def provision(path):
         run(['systemctl', 'start', 'astroneer'])
         print('Existing installation reconciled; persistent data preserved')
         return
-    run(['docker', 'pull', c['image']])
+    inspected = pull_verified(c['image'], proof['game'] if proof else None)
     # Inspect numeric UID from the pinned image rather than assuming 1000.
     uid = run(['docker', 'run', '--rm', '--entrypoint', 'id', c['image'], '-u', 'steam']).stdout.strip()
     gid = run(['docker', 'run', '--rm', '--entrypoint', 'id', c['image'], '-g', 'steam']).stdout.strip()
@@ -171,14 +209,15 @@ def provision(path):
     for d in (BASE / 'game/Astro', saved):
         os.chown(d, int(uid), int(gid))
     if c['mode'] == 'playit':
-        setup_playit(c)
+        setup_playit(c, proof['playit'] if proof else None)
+    atomic(CONF.parent / 'image-provenance.json', json.dumps({'selection': proof, 'installed_game': inspected}, indent=2) + '\n')
     apply(c)  # Commit marker only after dependencies and storage succeed.
     run(['systemctl', 'start', 'astroneer'])
     print('Service started. Run astroneer diagnostics; registration and client join remain unverified.')
 
 
-def setup_playit(c):
-    run(['docker', 'pull', c['playit_image']])
+def setup_playit(c, proof=None):
+    pull_verified(c['playit_image'], proof)
     atomic('/etc/astroneer/playit-secret', c['playit_secret'])
     text = f'''[Unit]
 Description=Playit Linux agent
@@ -362,7 +401,7 @@ def parser():
     d = s.add_parser('restore'); d.add_argument('backup', type=Path); d.add_argument('--yes', action='store_true')
     d = s.add_parser('config'); d.add_argument('file', nargs='?', type=Path)
     s.add_parser('prestart', help=argparse.SUPPRESS)
-    d = s.add_parser('provision'); d.add_argument('file', type=Path)
+    d = s.add_parser('provision'); d.add_argument('file', type=Path); d.add_argument('--provenance', type=Path)
     return p
 
 
@@ -388,7 +427,7 @@ def main(argv=None):
     with LOCK.open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if a.cmd == 'provision':
-            provision(a.file); return 0
+            provision(a.file, a.provenance); return 0
         c = load()
         if a.cmd in ('start', 'stop', 'restart', 'status'):
             result = run(['systemctl', a.cmd, 'astroneer'], False)
