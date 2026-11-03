@@ -51,3 +51,13 @@ pretend its standalone wizard follows that API. For upstreaming, adapt the wizar
 to a reviewed core revision, add ct/install metadata and submit first to
 [DevScripts](https://github.com/community-scripts/DevScripts). See research notes
 for unavailable provenance and deployment gates.
+
+## Startup observability revision
+
+The game now uses bounded Docker json-file logs and no automatic restart. A read-only
+Bash observer sources the selected image's entrypoint and reports whitelisted failure
+stages with line/status; it does not retry or suppress errors. It changes the shell
+entrypoint invocation for observation while retaining the image digest and all existing
+mounts/security restrictions. Recent evidence is archived before Docker container
+replacement; persistent game directories are never removed. See STARTUP.md for the
+unverified live cause and deployment repair procedure.

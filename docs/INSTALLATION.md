@@ -99,3 +99,13 @@ for latest (or enter an approved release tag). Review the resolved Docker Hub so
 platform and digest and type APPROVE. Complete the mode-specific network prompts,
 review the CT summary, then type CREATE. These are operator instructions; no live
 host was accessed while developing the fix. Repeat the acceptance steps above.
+
+## Repair an existing installation
+
+Do not rerun the host creation wizard for an existing CT. Use the separate
+[in-place repair procedure](STARTUP.md#apply-to-the-existing-ct-105) to transfer the
+reviewed management files and run `install/repair.sh` inside that guest. It preserves
+configuration, image pin, Docker version and data, leaves the service stopped, and
+installs `/usr/bin/astroneer` for the default `pct enter` PATH. Repeating repair is safe.
+A repeated guest installation with the identical private configuration also reconciles
+the unit and makes one start attempt, but may run apt; use repair to avoid that.

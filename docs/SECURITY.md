@@ -16,10 +16,21 @@ manually after recovery. Root can still read environment variables through Docke
 API and process inspection. Backups contain plaintext secrets and must remain private.
 Do not run provisioning with shell tracing or collect raw Docker/game logs externally.
 
-Raw application output is suppressed because upstream components may emit secrets.
-The `logs` command provides a bounded error count instead; game-owned log files live
-behind a private data parent. Diagnostic JSON contains addresses and host resource
-information, but no passwords or tokens. Review before publishing even redacted output.
+Raw stdout/stderr is retained in Docker's rotating, per-container json-file logs
+(10m × three files for the game). Access through Docker is guest-root-equivalent;
+never grant untrusted users Docker socket access or publish raw logs. `astroneer logs`
+redacts known configured password/agent secret and common credential key formats,
+and strips terminal escape/control sequences. Redaction is best-effort: review output
+before sharing. Archived previous-attempt logs are additionally redacted, bounded
+and stored in mode-0600 files under root-only `/var/log/astroneer`.
+
+The observer never enables xtrace or dumps arbitrary command arguments/environment.
+Only known stage identifiers, source basename, line and exit status are reported.
+Application stderr stays in Docker logs; Docker CLI/pre-start errors and safe exit
+summaries go to the systemd journal. stdout alone is attached to the service to
+avoid duplicating raw application stderr into journald. Diagnostic JSON contains
+safe state/exit summaries and no raw application logs. Server-owned game logs may
+also contain secrets and remain behind the private data parent.
 
 Dependencies come from Debian's authenticated apt repositories. Runtime/agent images
 must use reviewed digests. Image digests alone prove identity, not provenance or lack

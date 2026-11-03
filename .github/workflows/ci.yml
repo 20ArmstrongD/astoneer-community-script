@@ -11,9 +11,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck shfmt
       - name: Shell syntax and lint
         run: |
-          bash -n install.sh install/astroneer-install.sh scripts/astroneer
-          shellcheck -x install.sh install/astroneer-install.sh scripts/astroneer
-          shfmt -d -i 2 install.sh install/astroneer-install.sh scripts/astroneer
+          bash -n install.sh install/astroneer-install.sh install/repair.sh scripts/astroneer scripts/entrypoint-observer.sh
+          shellcheck -x install.sh install/astroneer-install.sh install/repair.sh scripts/astroneer scripts/entrypoint-observer.sh
+          shfmt -d -i 2 install.sh install/astroneer-install.sh install/repair.sh scripts/astroneer scripts/entrypoint-observer.sh
       - name: Python syntax and offline tests
         run: |
           python3 -m py_compile scripts/*.py

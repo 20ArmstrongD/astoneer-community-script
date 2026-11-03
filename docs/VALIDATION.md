@@ -5,9 +5,9 @@ no LXC was created and no game, Docker image or Playit tunnel was executed.
 
 Executed locally:
 
-- `python3 -m unittest discover -s tests -v`: 56 offline tests passed after the image-selection fix.
+- `python3 -m unittest discover -s tests -v`: 77 offline tests passed after the startup-observability fix.
 - `python3 -m py_compile scripts/*.py`: passed.
-- `bash -n install.sh install/astroneer-install.sh scripts/astroneer`: passed.
+- `bash -n install.sh install/*.sh scripts/astroneer scripts/entrypoint-observer.sh`: passed.
 
 ShellCheck and shfmt are not installed in this environment. Restricted shell DNS
 prevented fetching tooling. Their execution is configured in GitHub Actions, but
@@ -53,3 +53,16 @@ denied. No build, pull, new CT, live host access or real game test was performed
 See IMAGES.md for the distinction between documented publication and current live
 registry/artifact availability. The newly selected image still needs real-host
 acceptance testing; no reproducible source-build claim is made.
+
+## Startup-observability revision
+
+Executed locally: 77 offline tests, Python compilation, Bash syntax checks and
+`git diff --check`. The observer itself was executed against temporary Bash fixtures,
+not merely mocked. Tests cover failing/interrupted SteamCMD calls, misleading timeout
+text with zero exit, Node configuration failure, explicit exits, unknown-command
+redaction, the native wait-n behavior, bounded log reads and child timeout cleanup,
+previous-attempt retention, repair idempotency/preservation and minimal PATH installation.
+No live CT, pinned image, game startup, Docker logging rotation or UDP/client connection
+was tested here. ShellCheck/shfmt remain unavailable locally; CI includes both and
+now covers the new observer and repair scripts. The underlying live failing command
+remains unidentified until the administrator captures one instrumented attempt.

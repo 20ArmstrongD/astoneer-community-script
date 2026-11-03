@@ -6,11 +6,14 @@ be tested. Invalid command syntax returns argparse exit 2. Mutation commands req
 root and serialize through a nonblocking lock; another active operation returns an
 error rather than racing. Use the CLI for normal operations.
 
-`astroneer status` reports systemd; `astroneer logs` gives recent error/fatal line
-counts from at most the last 64 KiB of the newest game log. This is a heuristic,
-not an error parser. No logs found is not evidence of healthy startup. Inspect
-`/var/lib/astroneer/game/Astro/Saved/Logs` privately if needed; never post raw logs.
-Service output is intentionally suppressed to protect upstream secrets.
+`astroneer status` reports systemd. `astroneer logs --tail 300` displays actual
+SteamCMD/Proton/entrypoint output, `--game` reads the latest game log, and
+`--previous` reads the last archived attempt. These commands redact known secrets;
+review before sharing. Missing/disabled logs are not evidence of healthy startup.
+Follow [STARTUP.md](STARTUP.md) for in-place repair and stage/exit-code investigation.
+The game service does not automatically restart on failure. After reviewing evidence,
+start once explicitly; after three starts within five minutes systemd rate-limits
+further attempts until `systemctl reset-failed astroneer` or the interval expires.
 
 Docker errors in an unprivileged CT: inspect `journalctl -u docker` locally, host
 kernel/AppArmor versions and storage compatibility. Do not disable security or

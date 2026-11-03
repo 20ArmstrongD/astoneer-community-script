@@ -46,7 +46,10 @@ astroneer start
 astroneer stop
 astroneer restart
 astroneer status
-astroneer logs
+astroneer logs --tail 300
+astroneer logs --previous
+astroneer logs --game
+astroneer repair
 astroneer diagnostics
 astroneer diagnostics --json
 astroneer config
@@ -86,14 +89,28 @@ but may not permit client joins because public registration is still required.
 tradeoffs. Xbox self-hosting is unsupported by official policy. PlayStation on this
 Linux runtime remains untested. The primary target is Steam PC.
 
-Application stdout/stderr and Docker log capture are disabled to prevent upstream
-credential leakage. `logs` reports recent error counts; game log files remain
-private and can contain secrets. This sacrifices raw live logs for predictable
-redaction. Diagnostics never reports registration or tunnel success from process
-health alone. Review private logs locally when necessary.
+Startup stdout/stderr (including SteamCMD and Proton) is kept by Docker's rotating
+`json-file` driver: 10m per file, three files. `astroneer logs --tail 300` shows actual
+output with known passwords/tokens redacted; `--game` reads the latest game log and
+`--previous` reads the archived previous attempt. Raw Docker logs can contain secrets
+and must remain private. Before replacing a stopped game container, the last 2 MiB
+of up to 5000 log lines are archived; three such attempts are retained under
+`/var/log/astroneer` with root-only access. No game auto-restart loop is configured.
+
+A read-only observer sources the pinned image's upstream entrypoint, reports failed
+command stage/line/exit status, and preserves the original nonzero exit. It does not
+ignore SteamCMD errors or regenerate initialization markers. See
+[startup investigation and existing-deployment repair](docs/STARTUP.md).
+
+To repair installed management files from a reviewed checkout **inside the existing
+guest**, run `bash install/repair.sh`. This stops the old restart loop and updates
+managed code/unit/PATH entries without pulling an image, upgrading Docker or replacing
+configuration/data. It leaves the game stopped. Run `astroneer start` once and inspect
+`astroneer logs` and `astroneer diagnostics`. The `--start` option requests that one
+attempt immediately. `/usr/bin/astroneer` also works with a minimal `pct enter` PATH.
 
 Run offline checks with `python3 -m unittest discover -s tests -v` and
-`bash -n install.sh install/astroneer-install.sh scripts/astroneer`. CI also runs
+`bash -n install.sh install/*.sh scripts/astroneer scripts/entrypoint-observer.sh`. CI also runs
 ShellCheck and shfmt. See [validation record](docs/VALIDATION.md) for what actually ran.
 
 Original wrapper code is MIT licensed. Astroneer belongs to System Era; Steam,

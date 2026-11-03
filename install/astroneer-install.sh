@@ -24,6 +24,8 @@ docker info >/dev/null
 install -d -m 700 /etc/astroneer /var/lib/astroneer /var/backups/astroneer
 install -d -m 755 /usr/local/lib/astroneer
 install -m 755 "$ROOT/scripts/astroneer" /usr/local/bin/astroneer
+ln -sfn /usr/local/bin/astroneer /usr/bin/astroneer
+install -m 755 "$ROOT/scripts/entrypoint-observer.sh" /usr/local/lib/astroneer/entrypoint-observer.sh
 install -m 644 "$ROOT/scripts/manage.py" /usr/local/lib/astroneer/manage.py
 if [[ $# -eq 2 ]]; then
   python3 /usr/local/lib/astroneer/manage.py provision "$1" --provenance "$2"

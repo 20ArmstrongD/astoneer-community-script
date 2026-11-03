@@ -87,6 +87,8 @@ class Operations(unittest.TestCase):
             p = patch.object(m, name, val); p.start(); self.addCleanup(p.stop)
         previous_umask = os.umask(0o077)
         self.addCleanup(os.umask, previous_umask)
+        capture = patch.object(m, 'capture_logs', return_value=result(code=1))
+        capture.start(); self.addCleanup(capture.stop)
         self.output = contextlib.redirect_stdout(io.StringIO()); self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
 
@@ -130,10 +132,10 @@ class Operations(unittest.TestCase):
             self.assertEqual(run.call_args_list[-1].args[0], ['systemctl', 'start', 'astroneer'])
 
     def test_repeated_provision(self):
-        with patch.object(m, 'run') as run, patch.object(m, 'apply') as apply:
+        with patch.object(m, 'repair') as repair, patch.object(m, 'pull_verified') as pull:
             m.provision(self.conf)
-        apply.assert_called_once()
-        run.assert_called_once_with(['systemctl', 'start', 'astroneer'])
+        repair.assert_called_once_with(config(), start=True)
+        pull.assert_not_called()
 
     def test_partial_provision(self):
         incoming = self.root/'incoming.json'; incoming.write_text(self.conf.read_text())
@@ -214,7 +216,8 @@ class Operations(unittest.TestCase):
         text = m.unit(config()['image'])
         self.assertNotIn(config()['password'], text)
         self.assertIn('--cap-drop ALL', text)
-        self.assertIn('--log-driver none', text)
+        self.assertIn('--log-driver json-file --log-opt max-size=10m --log-opt max-file=3', text)
+        self.assertIn('Restart=no', text)
 
     def test_diagnostics_separate_states_json(self):
         m.atomic(self.conf.parent/'server.env', m.env(config()))

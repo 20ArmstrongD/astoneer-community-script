@@ -10,19 +10,24 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 BASE = Path('/var/lib/astroneer')
 CONF = Path('/etc/astroneer/config.json')
 BACK = Path('/var/backups/astroneer')
 LOCK = Path('/run/lock/astroneer.lock')
 NAME = 'astroneer-game'
+LOGDIR = Path('/var/log/astroneer')
+UNIT = Path('/etc/systemd/system/astroneer.service')
+LOG_LIMIT = 2 * 1024 * 1024
 IMAGE = r'barumel/docker-astroneer-server@sha256:[a-f0-9]{64}'
 PLAYIT = r'ghcr.io/playit-cloud/playit-agent@sha256:[a-f0-9]{64}'
 
@@ -118,18 +123,21 @@ Description=Astroneer dedicated server (Proton)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 [Service]
 Type=simple
-ExecStartPre=-/usr/bin/docker rm {NAME}
+ExecStartPre=/usr/bin/python3 /usr/local/lib/astroneer/manage.py prepare
 ExecStartPre=/usr/bin/python3 /usr/local/lib/astroneer/manage.py prestart
-ExecStart=/usr/bin/docker run --name {NAME} --user steam --network host --cap-drop ALL --security-opt no-new-privileges --env-file /etc/astroneer/server.env --mount type=bind,src=/var/lib/astroneer/game,dst=/astroneer --mount type=bind,src=/var/lib/astroneer/steamcmd,dst=/steamcmd --mount type=bind,src=/var/lib/astroneer/upstream-backup,dst=/backup --log-driver none {image}
+ExecStart=/usr/bin/docker run --attach stdout --name {NAME} --user steam --network host --cap-drop ALL --security-opt no-new-privileges --env-file /etc/astroneer/server.env --mount type=bind,src=/var/lib/astroneer/game,dst=/astroneer --mount type=bind,src=/var/lib/astroneer/steamcmd,dst=/steamcmd --mount type=bind,src=/var/lib/astroneer/upstream-backup,dst=/backup --mount type=bind,src=/usr/local/lib/astroneer/entrypoint-observer.sh,dst=/run/astroneer-observer.sh,readonly --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --entrypoint /bin/bash {image} /run/astroneer-observer.sh
 ExecStop=/usr/bin/docker stop --time 120 {NAME}
 TimeoutStopSec=150
 TimeoutStartSec=900
-Restart=on-failure
-RestartSec=15
+ExecStopPost=/usr/bin/python3 /usr/local/lib/astroneer/manage.py report
+Restart=no
 StandardOutput=null
-StandardError=null
+StandardError=journal
+SyslogIdentifier=astroneer
 [Install]
 WantedBy=multi-user.target
 '''
@@ -137,10 +145,148 @@ WantedBy=multi-user.target
 
 def apply(c):
     atomic(CONF.parent / 'server.env', env(c))
-    atomic('/etc/systemd/system/astroneer.service', unit(c['image']), 0o644)
+    atomic(UNIT, unit(c['image']), 0o644)
     run(['systemctl', 'daemon-reload'])
     run(['systemctl', 'enable' if c['autostart'] else 'disable', 'astroneer'])
     atomic(CONF, json.dumps(c, indent=2) + '\n')
+
+
+def redact(text, c):
+    # Redact keyed values first: a short configured secret could itself occur
+    # inside a key name (e.g. "secret" in SECRET_KEY).
+    text = re.sub(r"(?im)(authorization[\"']?\s*[=:]\s*)[^\n]*", r'\1[REDACTED]', text)
+    text = re.sub(r"(?i)((?:password|serverpassword|secret_key|access_token|token)[\"']?\s*[=:]\s*)(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s,;]+)", r'\1[REDACTED]', text)
+    for key in ('password', 'playit_secret'):
+        if c.get(key):
+            text = text.replace(c[key], '[REDACTED]')
+    # Strip terminal escape/control sequences from untrusted application output.
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    return ''.join(ch for ch in text if ch in '\n\t' or ord(ch) >= 32 and ord(ch) != 127)
+
+
+def capture_logs(tail=200):
+    """Read via Docker's API, bounded in memory and time, keeping the newest bytes."""
+    args = ['docker', 'logs', '--timestamps', '--tail', str(tail), NAME]
+    data = bytearray(); truncated = False
+    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            deadline = time.monotonic() + 20
+            try:
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError('docker logs timed out; inspect Docker service health')
+                    for key, _ in selector.select(min(remaining, 1)):
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        else:
+                            data.extend(chunk)
+                            if len(data) > LOG_LIMIT:
+                                del data[:-LOG_LIMIT]; truncated = True
+                code = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except (Exception, KeyboardInterrupt):
+                proc.kill(); proc.wait()
+                raise
+    prefix = '[older log bytes truncated]\n' if truncated else ''
+    return subprocess.CompletedProcess(args, code, prefix + data.decode('utf-8', errors='replace'), '')
+
+
+def state_info():
+    try:
+        p = run(['docker', 'inspect', '--format', '{{json .State}}', NAME], False)
+    except OSError:
+        return None
+    if p.returncode:
+        return None
+    try:
+        state = json.loads(p.stdout)
+        if not isinstance(state, dict):
+            return None
+        return {k: state.get(k) for k in ('Status', 'Running', 'ExitCode', 'OOMKilled', 'Error', 'StartedAt', 'FinishedAt')}
+    except ValueError:
+        return None
+
+
+def failure_marker(text):
+    matches = re.findall(r'ASTRONEER_STARTUP_FAILURE status=([0-9]+) source=([A-Za-z0-9_.-]+) line=([0-9]+) stage=([a-z-]+)', text)
+    if not matches:
+        return None
+    code, source, line, stage = matches[-1]
+    return {'exit_code': int(code), 'source': source, 'line': int(line), 'stage': stage}
+
+
+def prepare(c):
+    run(['docker', 'info'])
+    # Check existence without confusing a Docker outage with a missing container.
+    found = run(['docker', 'ps', '-a', '--filter', f'name=^/{NAME}$', '--format', '{{.Names}}']).stdout.splitlines()
+    if NAME not in found:
+        return
+    state = state_info()
+    if state is None or state.get('Running'):
+        raise ValueError('Refusing to replace a running or uninspectable game container; stop it and inspect first')
+    logs = capture_logs(5000)
+    # Preserve recent evidence before Docker removes the stopped container. Never
+    # remove volumes, initialization markers, manifests or save/config files.
+    LOGDIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(LOGDIR, 0o700)
+    for index in (2, 1):
+        previous = LOGDIR / f'previous-{index}.log'
+        if previous.exists():
+            os.replace(previous, LOGDIR / f'previous-{index + 1}.log')
+    text = json.dumps(state) + '\n' + (logs.stdout if logs.returncode == 0 else 'Docker logs unavailable (old logging driver may be none).\n')
+    atomic(LOGDIR / 'previous-1.log', redact(text, c))
+    run(['docker', 'rm', NAME])
+
+
+def show_logs(c, tail, previous=False, game=False):
+    if previous:
+        path = LOGDIR / 'previous-1.log'
+        if not path.exists():
+            raise ValueError('No archived previous startup; existing log-driver none output cannot be recovered')
+        text = path.read_text(errors='replace')
+    elif game:
+        paths = sorted((BASE / 'game/Astro/Saved/Logs').glob('*.log'), key=lambda p: p.stat().st_mtime)
+        if not paths:
+            raise ValueError('No game log file yet; use astroneer logs for SteamCMD/Proton startup output')
+        with paths[-1].open('rb') as f:
+            f.seek(max(0, paths[-1].stat().st_size - LOG_LIMIT))
+            text = f.read(LOG_LIMIT).decode('utf-8', errors='replace')
+    else:
+        output = capture_logs(tail)
+        if output.returncode:
+            raise RuntimeError('Cannot read container logs. Old log-driver none output is unrecoverable; apply repair and start once. Check journalctl -u astroneer for Docker launch errors.')
+        text = output.stdout
+    print(redact('\n'.join(text.splitlines()[-tail:]), c))
+
+
+def report(c):
+    state = state_info()
+    if state is None:
+        print('No inspectable game container. Check journalctl -u astroneer for pre-start/Docker launch errors.', file=sys.stderr)
+        return
+    summary = {k: state[k] for k in ('Status', 'ExitCode', 'OOMKilled', 'Error')}
+    print(redact('Astroneer container state: ' + json.dumps(summary), c), file=sys.stderr)
+    if state.get('ExitCode'):
+        output = capture_logs(5000)
+        marker = failure_marker(output.stdout) if output.returncode == 0 else None
+        print('Startup failure: ' + json.dumps(marker) if marker else 'Exact failed command not yet identified; inspect astroneer logs and astroneer logs --game.', file=sys.stderr)
+        print('No automatic retry. Review logs before astroneer start. UDP/registration are not proven.', file=sys.stderr)
+
+
+def repair(c, start=False):
+    if not (CONF.parent / 'server.env').is_file():
+        raise ValueError('Existing server.env is missing; inspect configuration manually before repair')
+    run(['systemctl', 'stop', 'astroneer'])
+    # Only replace our unit. Keep private JSON/env, provenance, INIs and data intact.
+    atomic(UNIT, unit(c['image']), 0o644)
+    run(['systemctl', 'daemon-reload'])
+    run(['systemctl', 'reset-failed', 'astroneer'])
+    print('Service repaired and stopped. Configuration, image pin and data preserved. Logs become available after one new start.')
+    if start:
+        run(['systemctl', 'start', 'astroneer'])
+        print('One startup attempt launched; inspect astroneer logs and diagnostics. Process launch is not readiness.')
 
 
 def pull_verified(image, proof=None):
@@ -184,8 +330,7 @@ def provision(path, provenance_path=None):
     if CONF.exists():
         if load() != c:
             raise ValueError('Already installed with different configuration; use astroneer config FILE')
-        apply(c)
-        run(['systemctl', 'start', 'astroneer'])
+        repair(c, start=True)
         print('Existing installation reconciled; persistent data preserved')
         return
     inspected = pull_verified(c['image'], proof['game'] if proof else None)
@@ -373,8 +518,29 @@ def diagnostics(c, as_json):
             add('outbound_tcp', 'PASS', 'TCP 443 only; does not test game UDP')
     except OSError:
         add('outbound_tcp', 'WARN', 'Could not connect')
-    safe = all((x.stat().st_mode & 0o077) == 0 for x in (CONF, CONF.parent / 'server.env', BASE))
+    safe = all(x.exists() and (x.stat().st_mode & 0o077) == 0 for x in (CONF, CONF.parent / 'server.env', BASE))
+    try:
+        actual = dict(line.split('=', 1) for line in (CONF.parent / 'server.env').read_text().splitlines() if '=' in line and not line.startswith('#'))
+        expected = dict(line.split('=', 1) for line in env(c).splitlines())
+        matches = all(actual.get(k) == v for k, v in expected.items())
+    except OSError:
+        matches = False
+    add('environment_file', 'PASS' if matches else 'WARN', 'Managed environment matches private configuration' if matches else 'Missing or different server.env; review locally without sharing credentials. Repair preserves it.')
     add('permissions', 'PASS' if safe else 'FAIL', 'Root configuration and data parent must be private')
+    state = state_info()
+    add('docker_exit', 'WARN' if state is None else 'FAIL' if state.get('OOMKilled') or not state.get('Running') and state.get('ExitCode') else 'PASS',
+        'No inspectable container; check journalctl -u astroneer' if state is None else f"status={state.get('Status')}, exit={state.get('ExitCode')}, OOMKilled={state.get('OOMKilled')}")
+    installed = (BASE / 'game/Astro/Binaries/Win64/AstroServer-Win64-Shipping.exe').is_file()
+    initialized = (BASE / 'game/initialized').is_file()
+    add('startup_files', 'PASS' if installed else 'WARN', f'game executable present={installed}; upstream initialized marker={initialized}; neither proves a running game')
+    cfgdir = BASE / 'game/Astro/Saved/Config/WindowsServer'
+    add('game_configuration', 'PASS' if all((cfgdir / n).is_file() for n in ('Engine.ini', 'AstroServerSettings.ini')) else 'WARN', 'INI presence only; contents and configuration success require startup logs')
+    try:
+        output = capture_logs(5000)
+        marker = failure_marker(output.stdout) if output.returncode == 0 else None
+        add('startup_failure', 'FAIL' if marker else 'WARN', json.dumps(marker) if marker else 'Exact failed command unknown; astroneer logs and journalctl -u astroneer')
+    except (OSError, RuntimeError):
+        add('startup_failure', 'WARN', 'Logs unavailable; repair old logging driver or check Docker health')
     count = error_count()
     has_logs = any((BASE / 'game/Astro/Saved/Logs').glob('*.log'))
     add('recent_errors', 'WARN' if count or not has_logs else 'PASS', f'{count} error/fatal lines in the tail of the newest game log; content suppressed')
@@ -393,14 +559,19 @@ def error_count():
 
 def parser():
     p = argparse.ArgumentParser(prog='astroneer')
-    s = p.add_subparsers(dest='cmd', required=True)
-    for n in ('start', 'stop', 'restart', 'status', 'logs', 'backup', 'version', 'help'):
-        s.add_parser(n)
-    d = s.add_parser('diagnostics'); d.add_argument('--json', action='store_true')
-    d = s.add_parser('update'); d.add_argument('--image', required=True)
-    d = s.add_parser('restore'); d.add_argument('backup', type=Path); d.add_argument('--yes', action='store_true')
-    d = s.add_parser('config'); d.add_argument('file', nargs='?', type=Path)
-    s.add_parser('prestart', help=argparse.SUPPRESS)
+    s = p.add_subparsers(dest='cmd', required=True, metavar='COMMAND')
+    for n in ('start', 'stop', 'restart', 'status', 'backup', 'version', 'help'):
+        s.add_parser(n, help=f'{n.capitalize()} the managed server' if n in ('start', 'stop', 'restart') else n.capitalize())
+    d = s.add_parser('logs', help='Read redacted startup/game logs'); d.add_argument('--tail', type=int, default=200)
+    group = d.add_mutually_exclusive_group(); group.add_argument('--previous', action='store_true'); group.add_argument('--game', action='store_true')
+    d = s.add_parser('repair', help='Repair the unit while preserving configuration/data'); d.add_argument('--start', action='store_true')
+    for internal in ('prepare', 'report'):
+        s.add_parser(internal)
+    d = s.add_parser('diagnostics', help='Check process, UDP and startup evidence'); d.add_argument('--json', action='store_true')
+    d = s.add_parser('update', help='Update to an explicitly pinned image'); d.add_argument('--image', required=True)
+    d = s.add_parser('restore', help='Restore a selected backup'); d.add_argument('backup', type=Path); d.add_argument('--yes', action='store_true')
+    d = s.add_parser('config', help='View or apply private configuration'); d.add_argument('file', nargs='?', type=Path)
+    s.add_parser('prestart')
     d = s.add_parser('provision'); d.add_argument('file', type=Path); d.add_argument('--provenance', type=Path)
     return p
 
@@ -414,6 +585,14 @@ def main(argv=None):
     if os.geteuid() != 0:
         raise ValueError('Run astroneer as root')
     os.umask(0o077)
+    if a.cmd == 'logs':
+        if not 1 <= a.tail <= 5000:
+            raise ValueError('--tail must be between 1 and 5000')
+        show_logs(load(), a.tail, a.previous, a.game)
+        return 0
+    if a.cmd in ('prepare', 'report'):
+        (prepare if a.cmd == 'prepare' else report)(load())
+        return 0
     if a.cmd == 'prestart':
         run(['docker', 'info'])
         state = run(['docker', 'inspect', '--format', '{{.State.Running}}', NAME], False)
@@ -431,10 +610,12 @@ def main(argv=None):
         c = load()
         if a.cmd in ('start', 'stop', 'restart', 'status'):
             result = run(['systemctl', a.cmd, 'astroneer'], False)
-            print(result.stdout.strip() or f'{a.cmd}: exit {result.returncode}')
+            print(redact(result.stdout.strip(), c) or f'{a.cmd}: exit {result.returncode}')
+            if a.cmd in ('start', 'restart'):
+                print('Inspect astroneer logs and diagnostics; systemd accepting a request does not prove readiness. Automatic retries are disabled.' if result.returncode == 0 else 'Start request failed; inspect journalctl -u astroneer and astroneer logs before retrying.')
             return result.returncode
-        if a.cmd == 'logs':
-            print(f'Recent game log error/fatal lines: {error_count()}. Raw output suppressed because upstream may log credentials. Private logs: /var/lib/astroneer/game/Astro/Saved/Logs'); return 0
+        if a.cmd == 'repair':
+            repair(c, a.start); return 0
         if a.cmd == 'diagnostics':
             return diagnostics(c, a.json)
         if a.cmd == 'config' and not a.file:
