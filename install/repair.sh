@@ -5,7 +5,7 @@ set -euo pipefail
   echo 'Run inside the existing Debian LXC as root' >&2
   exit 1
 }
-[[ $# -eq 0 || ( $# -eq 1 && $1 == --start ) ]] || {
+[[ $# -eq 0 || ($# -eq 1 && $1 == --start) ]] || {
   echo 'Usage: repair.sh [--start]' >&2
   exit 2
 }

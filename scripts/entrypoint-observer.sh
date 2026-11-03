@@ -5,12 +5,12 @@ set -E
 astro_failure() {
   local result=$1 line=$2 invocation=$3 origin=${4##*/} stage=unclassified
   case "$invocation" in
-    'bash /steamcmd/steamcmd.sh +quit') stage=steamcmd-self-update ;;
-    'bash /steamcmd/steamcmd.sh +runscript /tmp/install.txt') stage=steamcmd-game-update ;;
-    '/geproton/proton run /astroneer/Astro/Binaries/Win64/AstroServer-Win64-Shipping.exe') stage=proton-initialization ;;
-    'node /srv/src/restore.js') stage=upstream-restore ;;
-    'node /srv/src/initConfig.js') stage=configuration ;;
-    'wait -n' | 'builtin wait "$@"') stage=runtime-child-exit ;;
+  'bash /steamcmd/steamcmd.sh +quit') stage=steamcmd-self-update ;;
+  'bash /steamcmd/steamcmd.sh +runscript /tmp/install.txt') stage=steamcmd-game-update ;;
+  '/geproton/proton run /astroneer/Astro/Binaries/Win64/AstroServer-Win64-Shipping.exe') stage=proton-initialization ;;
+  'node /srv/src/restore.js') stage=upstream-restore ;;
+  'node /srv/src/initConfig.js') stage=configuration ;;
+  'wait -n' | 'builtin wait "$@"') stage=runtime-child-exit ;;
   esac
   # No BASH_COMMAND dump or xtrace: arguments could contain credentials.
   printf 'ASTRONEER_STARTUP_FAILURE status=%s source=%s line=%s stage=%s\n' \
@@ -56,9 +56,9 @@ wait() {
       fi
     done
     case "$finished" in
-      "$game_pid") role=game-launcher ;;
-      "$backup_pid") role=backup-helper ;;
-      "$monitor") role=game-watchdog ;;
+    "$game_pid") role=game-launcher ;;
+    "$backup_pid") role=backup-helper ;;
+    "$monitor") role=game-watchdog ;;
     esac
     printf 'ASTRONEER_CHILD_EXIT role=%s status=%s\n' "$role" "$result" >&2
     astro_stop_children
