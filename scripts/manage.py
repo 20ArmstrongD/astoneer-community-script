@@ -21,7 +21,8 @@ import time
 
 from runtime import memory_info
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
+PENDING = ('playit-pending', 'network-pending')
 BASE = Path('/var/lib/astroneer')
 CONF = Path('/etc/astroneer/config.json')
 BACK = Path('/var/backups/astroneer')
@@ -63,7 +64,7 @@ def validate(c):
         raise ValueError('Configuration must be a JSON object')
     expected = {'image', 'name', 'owner', 'password', 'port', 'public_ip', 'mode',
                 'retention', 'autostart', 'playit_image', 'playit_secret', 'external_port'}
-    if set(c) != expected:
+    if set(c) - {'network_preference'} != expected:
         raise ValueError('Configuration keys must match config/example.json')
     if not isinstance(c['image'], str) or not re.fullmatch(IMAGE, c['image']):
         raise ValueError('A reviewed barumel image sha256 digest is required')
@@ -73,11 +74,15 @@ def validate(c):
     for k, low, high in [('port', 1024, 65535), ('external_port', 1024, 65535), ('retention', 1, 365)]:
         if type(c[k]) is not int or not low <= c[k] <= high:
             raise ValueError(f'{k}: expected integer {low}..{high}')
-    if type(c['autostart']) is not bool or c['mode'] not in ('direct', 'playit', 'lan', 'playit-pending'):
+    if any(not isinstance(c[k], str) for k in ('public_ip', 'playit_image', 'playit_secret')):
+        raise ValueError('Endpoint and optional local-agent fields must be strings')
+    if type(c['autostart']) is not bool or c['mode'] not in ('direct', 'playit', 'playit-external', 'lan', 'playit-pending', 'network-pending'):
         raise ValueError('Invalid autostart or networking mode')
-    if c['mode'] == 'playit-pending':
+    if 'network_preference' in c and c['network_preference'] not in ('playit-local', 'playit-existing', 'direct', 'lan'):
+        raise ValueError('Invalid pending network preference')
+    if c['mode'] in PENDING:
         if c['public_ip'] or c['playit_image'] or c['playit_secret'] or c['external_port'] != c['port']:
-            raise ValueError('Pending Playit setup must have no public endpoint/identity yet')
+            raise ValueError('Pending network setup must have no public endpoint/identity yet')
         return c
     address = ipaddress.IPv4Address(c['public_ip'])
     if address.is_loopback or address.is_multicast or address.is_unspecified or address.is_reserved or address.is_link_local:
@@ -87,7 +92,7 @@ def validate(c):
     if c['mode'] != 'lan' and not ipaddress.ip_address(c['public_ip']).is_global:
         raise ValueError('Direct/Playit mode requires a globally routable assigned IPv4')
     if c['mode'] == 'playit':
-        if not re.fullmatch(PLAYIT, c['playit_image']) or not re.fullmatch(r'[A-Za-z0-9_-]{8,512}', c['playit_secret']):
+        if not re.fullmatch(PLAYIT, c['playit_image']) or c['playit_secret'] and not re.fullmatch(r'[A-Za-z0-9_-]{8,512}', c['playit_secret']):
             raise ValueError('Playit requires a reviewed image digest and agent secret')
     elif c['playit_image'] or c['playit_secret']:
         raise ValueError('Playit fields must be empty when disabled')
@@ -122,11 +127,10 @@ def stopped():
             run(['systemctl', 'start', 'astroneer'])
 
 
-def unit(image, playit=False):
+def unit(image):
     # The LXC's network namespace avoids Docker NAT and makes ss checks useful.
-    dependency = 'Requires=astroneer-playit.service\nAfter=astroneer-playit.service\n' if playit else ''
     return f'''[Unit]
-{dependency}Description=Astroneer dedicated server (Proton)
+Description=Astroneer dedicated server (Proton)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
@@ -153,9 +157,9 @@ WantedBy=multi-user.target
 
 def apply(c):
     atomic(CONF.parent / 'server.env', env(c))
-    atomic(UNIT, unit(c['image'], c['mode'] == 'playit'), 0o644)
+    atomic(UNIT, unit(c['image']), 0o644)
     run(['systemctl', 'daemon-reload'])
-    run(['systemctl', 'enable' if c['autostart'] and c['mode'] != 'playit-pending' else 'disable', 'astroneer'])
+    run(['systemctl', 'enable' if c['autostart'] and c['mode'] not in PENDING else 'disable', 'astroneer'])
     atomic(CONF, json.dumps(c, indent=2) + '\n')
 
 
@@ -345,7 +349,7 @@ def repair(c, start=False):
         raise ValueError('Existing server.env is missing; inspect configuration manually before repair')
     run(['systemctl', 'stop', 'astroneer'])
     # Only replace our unit. Keep private JSON/env, provenance, INIs and data intact.
-    atomic(UNIT, unit(c['image'], c['mode'] == 'playit'), 0o644)
+    atomic(UNIT, unit(c['image']), 0o644)
     run(['systemctl', 'daemon-reload'])
     run(['systemctl', 'reset-failed', 'astroneer'])
     print('Service repaired and stopped. Configuration, image pin and data preserved. Logs become available after one new start.')
@@ -395,7 +399,7 @@ def provision(path, provenance_path=None):
     if CONF.exists():
         if load() != c:
             raise ValueError('Already installed with different configuration; use astroneer config FILE')
-        repair(c, start=c['mode'] != 'playit-pending')
+        repair(c, start=c['mode'] not in PENDING)
         print('Existing installation reconciled; persistent data preserved')
         return
     inspected = pull_verified(c['image'], proof['game'] if proof else None)
@@ -422,8 +426,8 @@ def provision(path, provenance_path=None):
         setup_playit(c, proof['playit'] if proof else None)
     atomic(CONF.parent / 'image-provenance.json', json.dumps({'selection': proof, 'installed_game': inspected}, indent=2) + '\n')
     apply(c)  # Commit marker only after dependencies and storage succeed.
-    if c['mode'] == 'playit-pending':
-        print('Playit setup INCOMPLETE. Runtime installed; game stopped and boot activation deferred. Run astroneer playit setup, then configure.')
+    if c['mode'] in PENDING:
+        print('Network setup INCOMPLETE. Runtime installed; game stopped and boot activation deferred. Run astroneer network configure.')
         return
     run(['systemctl', 'start', 'astroneer'])
     print('Service started. Run astroneer diagnostics; registration and client join remain unverified.')
@@ -504,8 +508,8 @@ def restore(p, c, keep_network=False):
             saved.update({key: c[key] for key in ('mode', 'playit_image', 'playit_secret', 'public_ip', 'port', 'external_port')})
             validate(saved)
             print('Restore retains the current managed network endpoint and Playit identity.')
-        elif any(saved[k] != c[k] for k in ('mode', 'playit_image', 'playit_secret')):
-            raise ValueError('Restore cannot change network mode/agent identity; use --keep-network to restore saves while preserving the current endpoint')
+        elif any(saved[k] != c[k] for k in ('mode', 'playit_image', 'playit_secret', 'public_ip', 'port', 'external_port')):
+            raise ValueError('Restore cannot change network mode, endpoint or agent identity; use --keep-network to restore saves while preserving the current endpoint')
         run(['docker', 'pull', saved['image']])
         backup(c)  # Preserve pre-restore state before any rename.
         target = BASE / 'game/Astro/Saved'
@@ -534,8 +538,8 @@ def diagnostics(c, as_json):
             return subprocess.CompletedProcess(args, 127, '', '')
     def add(name, state, detail):
         rows.append({'check': name, 'state': state, 'detail': detail})
-    if c['mode'] == 'playit-pending':
-        add('network_setup', 'WARN', 'Playit setup incomplete; game intentionally stopped until account/tunnel configuration')
+    if c['mode'] in PENDING:
+        add('network_setup', 'WARN', 'Network setup incomplete; game intentionally stopped until connection settings are configured')
     add('os', 'PASS' if Path('/etc/debian_version').exists() else 'WARN', 'Requires Debian 12/13 amd64')
     p = probe(['systemd-detect-virt', '--container'])
     add('container', 'PASS' if p.stdout.strip() == 'lxc' else 'WARN', p.stdout.strip() or 'not detected')
@@ -544,27 +548,26 @@ def diagnostics(c, as_json):
     effective = memory['effective_limit_bytes']
     add('memory', 'PASS' if effective is not None and effective >= 4 * 1024**3 else 'WARN', json.dumps(memory))
     for label, args in [('runtime', ['docker', 'info']), ('service', ['systemctl', 'is-active', '--quiet', 'astroneer'])]:
-        add(label, 'PASS' if probe(args).returncode == 0 else 'WARN' if label == 'service' and c['mode'] == 'playit-pending' else 'FAIL', 'Command health check')
+        add(label, 'PASS' if probe(args).returncode == 0 else 'WARN' if label == 'service' and c['mode'] in PENDING else 'FAIL', 'Command health check')
     p = probe(['docker', 'inspect', '--format', '{{.State.Running}}', NAME])
-    add('process', 'PASS' if p.stdout.strip() == 'true' else 'WARN' if c['mode'] == 'playit-pending' else 'FAIL', 'Container running is not backend registration')
+    add('process', 'PASS' if p.stdout.strip() == 'true' else 'WARN' if c['mode'] in PENDING else 'FAIL', 'Container running is not backend registration')
     game = probe(['docker', 'top', NAME, '-eo', 'comm'])
     found_game = any('AstroServer' in line for line in game.stdout.splitlines())
-    add('game_process', 'PASS' if found_game else 'WARN' if c['mode'] == 'playit-pending' else 'FAIL', 'AstroServer executable seen in process names' if found_game else 'Game executable not observed; initialization or failure possible')
+    add('game_process', 'PASS' if found_game else 'WARN' if c['mode'] in PENDING else 'FAIL', 'AstroServer executable seen in process names' if found_game else 'Game executable not observed; initialization or failure possible')
     p = probe(['ss', '-H', '-lun'])
     listening = any(re.search(rf':{c["port"]}\s', line) for line in p.stdout.splitlines())
     add('udp_listener', 'PASS' if listening else 'WARN', f'Local UDP {c["port"]}; socket ownership not proven')
     evidence = runtime_probe(c['port'])
-    add('game_readiness', 'PASS' if evidence and evidence.get('ready') else 'WARN' if c['mode'] == 'playit-pending' else 'FAIL', 'Actual game PID owns configured IPv4 UDP socket; backend unknown' if evidence and evidence.get('ready') else 'Game process/socket ownership not established; Docker/systemd health alone is insufficient')
+    add('game_readiness', 'PASS' if evidence and evidence.get('ready') else 'WARN' if c['mode'] in PENDING else 'FAIL', 'Actual game PID owns configured IPv4 UDP socket; backend unknown' if evidence and evidence.get('ready') else 'Game process/socket ownership not established; Docker/systemd health alone is insufficient')
     audit = runtime_audit()
     add('proton_runtime', 'WARN' if not audit or audit.get('machine_id') != 'valid' or any(d.get('missing') for d in audit.get('dependencies', [])) else 'PASS', json.dumps(audit) if audit else 'Runtime audit unavailable; read ASTRONEER_RUNTIME_AUDIT in startup logs. Missing machine-id causality remains unknown.')
     ips = probe(['hostname', '-I']).stdout.strip()
-    add('endpoint', 'WARN' if c['mode'] in ('lan', 'playit-pending') else 'PASS', 'Public endpoint unassigned; complete Playit setup/configure' if c['mode'] == 'playit-pending' else f'local={ips}; configured={c["public_ip"]}:{c["external_port"]}; assignment must be checked in provider/router')
+    add('endpoint', 'WARN' if c['mode'] in ('lan', 'playit-pending', 'network-pending') else 'PASS', 'Public endpoint unassigned; run astroneer network configure' if c['mode'] in PENDING else f'local={ips}; configured={c["public_ip"]}:{c["external_port"]}; assignment must be checked in provider/router')
     if c['mode'] == 'playit':
         p = probe(['systemctl', 'is-active', '--quiet', 'astroneer-playit'])
         add('playit_service', 'PASS' if p.returncode == 0 else 'FAIL', 'Agent process only')
-    if c['mode'] in ('playit', 'playit-pending'):
-        import playit
-        rows.extend(playit.status(sys.modules[__name__]))
+    import network
+    rows.extend(network.status(sys.modules[__name__], testing=False))
     for label in ('tunnel_connected', 'public_udp_reachability', 'backend_registration', 'client_join'):
         add(label, 'WARN', 'Unknown; requires independent provider/backend/client verification')
     try:
@@ -623,6 +626,8 @@ def parser():
         s.add_parser(n, help=f'{n.capitalize()} the managed server' if n in ('start', 'stop', 'restart') else n.capitalize())
     d = s.add_parser('logs', help='Read redacted startup/game logs'); d.add_argument('--tail', type=int, default=200)
     group = d.add_mutually_exclusive_group(); group.add_argument('--previous', action='store_true'); group.add_argument('--game', action='store_true')
+    import network
+    network.add_parser(s)
     d = s.add_parser('playit', help='Set up, configure, test or disable Playit networking')
     actions = d.add_subparsers(dest='playit_action', required=True)
     setup = actions.add_parser('setup'); setup.add_argument('--relink', action='store_true')
@@ -631,6 +636,7 @@ def parser():
     actions.add_parser('disable')
     action = actions.add_parser('configure'); action.add_argument('--rollback', action='store_true')
     action.add_argument('--public-ip'); action.add_argument('--port', type=int); action.add_argument('--local-port', type=int); action.add_argument('--yes', action='store_true')
+    action.add_argument('--agent', choices=('local', 'existing')); action.add_argument('--destination-ip'); action.add_argument('--start', action='store_true')
     d = s.add_parser('repair', help='Repair the unit while preserving configuration/data'); d.add_argument('--start', action='store_true')
     for internal in ('prepare', 'report', 'finish', 'wait-ready'):
         s.add_parser(internal)
@@ -652,6 +658,13 @@ def main(argv=None):
     if os.geteuid() != 0:
         raise ValueError('Run astroneer as root')
     os.umask(0o077)
+    if a.cmd == 'network' and a.network_action in ('status', 'test'):
+        import network
+        if a.network_action == 'test':
+            network.observe(sys.modules[__name__], a.observe)
+        rows = network.status(sys.modules[__name__])
+        print(json.dumps(rows, indent=2) if a.json else '\n'.join(f'{r["state"]:4} {r["check"]}: {r["detail"]}' for r in rows))
+        return 1 if any(r['state'] == 'FAIL' for r in rows) else 0
     if a.cmd == 'diagnostics':
         return diagnostics(load(), a.json)
     if a.cmd == 'playit' and a.playit_action in ('status', 'test'):
@@ -675,12 +688,11 @@ def main(argv=None):
         # Called synchronously by systemd with the game stopped. A separate hook
         # avoids deadlocking the management lock held by start/update/restore.
         c = load()
-        if c['mode'] == 'playit-pending':
-            raise ValueError('Playit setup incomplete; run astroneer playit setup and configure before starting the game')
-        if c['mode'] == 'playit':
-            import playit
-            playit.guard(sys.modules[__name__])
-        if (CONF.parent/'network-transaction.json').exists():
+        if c['mode'] in PENDING:
+            raise ValueError('Network setup incomplete; run astroneer network configure before starting the game')
+        import network
+        network.guard(sys.modules[__name__])
+        if (CONF.parent/'network-transaction.json').exists() or (LOCK.parent/'astroneer-network-maintenance').exists():
             backup(c, prune=False)
         else:
             backup(c)
@@ -691,6 +703,13 @@ def main(argv=None):
         if a.cmd == 'provision':
             provision(a.file, a.provenance); return 0
         c = load()
+        if a.cmd == 'network':
+            import network
+            if a.network_action == 'configure':
+                network.configure(sys.modules[__name__], a)
+            else:
+                network.rollback(sys.modules[__name__], a.snapshot, a.yes)
+            return 0
         if a.cmd == 'playit':
             import playit
             if a.playit_action == 'configure' and a.rollback:
@@ -700,7 +719,7 @@ def main(argv=None):
             elif a.playit_action == 'setup':
                 playit.setup(sys.modules[__name__], a.relink)
             elif a.playit_action == 'configure':
-                playit.configure(sys.modules[__name__], a.public_ip, a.port, a.local_port, a.yes)
+                playit.configure(sys.modules[__name__], a.public_ip, a.port, a.local_port, a.yes, a.agent, a.destination_ip, a.start)
             else:
                 getattr(playit, a.playit_action)(sys.modules[__name__])
             return 0
@@ -721,8 +740,8 @@ def main(argv=None):
                 raise ValueError('Restore cancelled; automation requires --yes')
         if a.cmd == 'config':
             new = validate(json.loads(a.file.read_text()))
-            if any(new[k] != c[k] for k in ('image', 'playit_image', 'playit_secret', 'mode')):
-                raise ValueError('Use update for game image; use astroneer playit setup/configure/disable for networking')
+            if any(new[k] != c[k] for k in ('image', 'playit_image', 'playit_secret', 'mode', 'public_ip', 'port', 'external_port')):
+                raise ValueError('Use update for game image; use astroneer network configure for networking')
             with stopped():
                 backup(c); apply(new)
         elif a.cmd == 'backup':

@@ -155,20 +155,23 @@ class WizardTests(unittest.TestCase):
             proof = host.network(c)
         return c, proof, out.getvalue()
 
-    def test_direct(self):
-        c, proof, out = self.network(['direct', '8.8.8.8', '8777', '8777'])
-        self.assertEqual(c['port'], 8777); self.assertIsNone(proof)
-        self.assertIn('Forward UDP', out)
-        self.assertIn('advertised=8.8.8.8:8777', out)
+    def test_direct_install_defers_endpoint_until_guest_exists(self):
+        c, proof, out = self.network(['direct'])
+        self.assertEqual(c['mode'], 'network-pending')
+        self.assertEqual(c['network_preference'], 'direct')
+        self.assertIsNone(proof)
+        self.assertIn('No public endpoint is required', out)
 
-    def test_direct_rejects_private_and_mismatch(self):
-        for answers in (['direct', '192.168.1.5', '8777', '8777'], ['direct', '8.8.8.8', '8777', '12345']):
-            with self.subTest(answers=answers), self.assertRaises(ValueError):
-                self.network(answers)
+    def test_existing_agent_install_does_not_require_credentials(self):
+        c, proof, out = self.network(['2'])
+        self.assertEqual(c['network_preference'], 'playit-existing')
+        self.assertEqual(c['playit_secret'], '')
+        self.assertEqual(c['public_ip'], '')
+        self.assertIsNone(proof)
 
     def test_playit_defers_endpoint_to_stage_two(self):
         c, proof, out = self.network(['playit'])
-        self.assertEqual(c['mode'], 'playit-pending')
+        self.assertEqual(c['mode'], 'network-pending')
         self.assertEqual(c['public_ip'], '')
         self.assertEqual(c['playit_secret'], '')
         self.assertIsNone(proof)
@@ -183,11 +186,12 @@ class WizardTests(unittest.TestCase):
     def test_lan_no_public_endpoint_prompt(self):
         c, proof, out = self.network(['lan', '192.168.1.105', '8777'])
         self.assertEqual(c['external_port'], 8777); self.assertIsNone(proof)
-        self.assertIn('LAN joins may fail', out)
+        self.assertEqual(c['network_preference'], 'lan')
+        self.assertIn('public reachability not established', out)
         self.assertEqual(c['playit_secret'], '')
 
     def test_invalid_mode_refused_early(self):
-        with self.assertRaisesRegex(ValueError, 'Network mode'):
+        with self.assertRaisesRegex(ValueError, 'Select 1, 2, 3 or 4'):
             self.network(['invalid'])
 
     def test_image_approval_required(self):
@@ -214,8 +218,8 @@ class WizardTests(unittest.TestCase):
         self.assertIsNone(records['playit'])
 
     def test_lan_rejects_loopback(self):
-        with self.assertRaisesRegex(ValueError, 'unicast'):
-            self.network(['lan', '127.0.0.1', '8777'])
+        c, _, _ = self.network(['lan'])
+        self.assertEqual(c['public_ip'], '')  # Guest address discovered inside the new LXC.
 
 
 

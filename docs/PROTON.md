@@ -1,3 +1,5 @@
+> For all host commands below, set `CTID` to your existing guest ID first. Prefer [the current upgrade procedure](UPGRADE.md).
+
 # Proton game exit: supervision, readiness and evidence
 
 The latest deployment report establishes successful SteamCMD and Node configuration,
@@ -98,22 +100,22 @@ cgroup namespace cannot be inspected. In the reported CT, expect approximately
 4294967296 bytes if the configured 4096 MiB cap is exposed. Inspect evidence before
 concluding that a missing limit means unrestricted host RAM or an OOM crash.
 
-## Apply safely to CT 105
+## Apply safely to the existing guest
 
 Push the reviewed local commit first if updating through Git. On the authorized
 Proxmox host, from the reviewed checkout containing this revision:
 
 ```bash
-pct config 105
+pct config "$CTID"
 git archive --format=tar HEAD scripts install > /root/astroneer-repair.tar
-pct exec 105 -- mkdir -p /root/astroneer-repair
-pct push 105 /root/astroneer-repair.tar /root/astroneer-repair.tar --perms 0600
-pct exec 105 -- tar -xf /root/astroneer-repair.tar -C /root/astroneer-repair
-pct exec 105 -- bash /root/astroneer-repair/install/repair.sh
+pct exec "$CTID" -- mkdir -p /root/astroneer-repair
+pct push "$CTID" /root/astroneer-repair.tar /root/astroneer-repair.tar --perms 0600
+pct exec "$CTID" -- tar -xf /root/astroneer-repair.tar -C /root/astroneer-repair
+pct exec "$CTID" -- bash /root/astroneer-repair/install/repair.sh
 ```
 
 Repair stops the game service, updates managed code/unit/read-only helper mounts
-and PATH entries, and leaves it stopped. It preserves CT 105, the pinned image,
+and PATH entries, and leaves it stopped. It preserves the existing guest, the pinned image,
 Docker/Proton versions, boot enablement, config.json/server.env, INIs, Wine prefix,
 saves, existing machine identities and container security restrictions. It performs
 no pull, apt upgrade, game reseed or data deletion. Repeating repair is safe.
@@ -121,19 +123,19 @@ no pull, apt upgrade, game reseed or data deletion. Repeating repair is safe.
 Capture one attempt; start now waits for local readiness and can correctly fail:
 
 ```bash
-pct exec 105 -- /usr/bin/astroneer start
-pct exec 105 -- /usr/bin/astroneer logs --tail 500
-pct exec 105 -- /usr/bin/astroneer logs --game --tail 200
-pct exec 105 -- /usr/bin/astroneer diagnostics --json
-pct exec 105 -- journalctl -u astroneer -n 80 --no-pager
+pct exec "$CTID" -- /usr/bin/astroneer start
+pct exec "$CTID" -- /usr/bin/astroneer logs --tail 500
+pct exec "$CTID" -- /usr/bin/astroneer logs --game --tail 200
+pct exec "$CTID" -- /usr/bin/astroneer diagnostics --json
+pct exec "$CTID" -- journalctl -u astroneer -n 80 --no-pager
 ```
 
 If still running, independently inspect actual game/socket evidence and the image
 runtime audit (these JSON outputs omit environment and machine-id values):
 
 ```bash
-pct exec 105 -- docker exec astroneer-game python3 /run/astroneer-runtime.py probe --port 8777
-pct exec 105 -- docker exec astroneer-game python3 /run/astroneer-runtime.py audit
+pct exec "$CTID" -- docker exec astroneer-game python3 /run/astroneer-runtime.py probe --port 8777
+pct exec "$CTID" -- docker exec astroneer-game python3 /run/astroneer-runtime.py audit
 ```
 
 Look for CHILD_EXIT, GAME_EVENT, STARTUP_FAILURE and the preceding Wine errors.

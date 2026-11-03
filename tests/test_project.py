@@ -112,6 +112,14 @@ class Operations(unittest.TestCase):
         self.assertEqual(restored['port'], 12345)
         self.assertEqual(restored['playit_secret'], current['playit_secret'])
 
+    def test_restore_cannot_silently_change_endpoint_or_profile(self):
+        archive = m.backup(config())
+        current = dict(config(), public_ip='8.8.4.4')
+        with patch.object(m, 'run') as run, self.assertRaisesRegex(ValueError, '--keep-network'):
+            m.restore(archive, current)
+        run.assert_not_called()
+        self.assertEqual((self.saved/'SaveGames/SAVE_1.savegame').read_bytes(), b'original save')
+
     def test_corrupt_archive(self):
         p = m.backup(config()); p.write_bytes(b'broken')
         with self.assertRaises(ValueError):
@@ -216,6 +224,12 @@ class Operations(unittest.TestCase):
 
     def test_network_migration_prestart_never_prunes_old_backups(self):
         m.atomic(self.conf.parent/'network-transaction.json', '{}')
+        with patch.object(m.os, 'geteuid', return_value=0), patch.object(m, 'run', return_value=result('false')), patch('network.guard'), patch.object(m, 'backup') as backup:
+            self.assertEqual(m.main(['prestart']), 0)
+        backup.assert_called_once_with(config(), prune=False)
+
+    def test_network_resume_prestart_does_not_prune_backups(self):
+        m.atomic(m.LOCK.parent/'astroneer-network-maintenance', 'network resume')
         with patch.object(m.os, 'geteuid', return_value=0), patch.object(m, 'run', return_value=result('false')), patch.object(m, 'backup') as backup:
             self.assertEqual(m.main(['prestart']), 0)
         backup.assert_called_once_with(config(), prune=False)

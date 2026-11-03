@@ -1,8 +1,10 @@
+> For all host commands below, set `CTID` to your existing guest ID first. Prefer [the current upgrade procedure](UPGRADE.md).
+
 # Startup failure investigation and in-place repair
 
 ## What is known
 
-The operator reports PVE 9.0.3, Debian 12 unprivileged CT 105, Docker 20.10.24 and
+The operator reports PVE 9.0.3, Debian 12 unprivileged the existing guest, Docker 20.10.24 and
 Proton 10-27. Provisioning, image/game download, initial Proton execution and creation
 of WindowsServer INIs succeeded. The follow-up report confirms configuration and the backup helper start, then
 AstroServer disappears with no UDP listener while Docker can remain active.
@@ -75,7 +77,7 @@ The observer changes the shell invocation while keeping the pinned image, steam 
 capability restrictions, no-new-privileges and persistent mounts. Test its live behavior
 on the current image before claiming a runtime fix. No source image is rebuilt.
 
-## Apply to the existing CT 105
+## Apply to the existing the existing guest
 
 These commands are for the administrator to run deliberately. They do not destroy,
 recreate or reprovision the LXC. Choose a reviewed checkout containing this change;
@@ -85,21 +87,21 @@ On the authorized Proxmox host, from the reviewed repository checkout:
 
 ```bash
 # Read-only confirmation: make sure this is the intended existing guest.
-pct config 105
+pct config "$CTID"
 
 # Copy only management scripts from the reviewed commit to a staging directory.
 git archive --format=tar HEAD scripts install > /root/astroneer-repair.tar
-pct exec 105 -- mkdir -p /root/astroneer-repair
-pct push 105 /root/astroneer-repair.tar /root/astroneer-repair.tar --perms 0600
-pct exec 105 -- tar -xf /root/astroneer-repair.tar -C /root/astroneer-repair
+pct exec "$CTID" -- mkdir -p /root/astroneer-repair
+pct push "$CTID" /root/astroneer-repair.tar /root/astroneer-repair.tar --perms 0600
+pct exec "$CTID" -- tar -xf /root/astroneer-repair.tar -C /root/astroneer-repair
 
 # Stop the old loop, install management files and regenerate only the game unit.
 # Default repair leaves it stopped for inspection; no apt, pulls or data reseeding.
-pct exec 105 -- bash /root/astroneer-repair/install/repair.sh
+pct exec "$CTID" -- bash /root/astroneer-repair/install/repair.sh
 
 # The command is reachable even when pct enter omits /usr/local/bin from PATH.
-pct exec 105 -- env PATH=/usr/bin:/bin astroneer version
-pct exec 105 -- /usr/bin/astroneer config
+pct exec "$CTID" -- env PATH=/usr/bin:/bin astroneer version
+pct exec "$CTID" -- /usr/bin/astroneer config
 ```
 
 Repair requires existing `/etc/astroneer/config.json` and `server.env`. It does not
@@ -112,13 +114,13 @@ opt into one immediate attempt; default repair does not start the game.
 Capture one attempt, after reviewing the configuration and confirming the guest ID:
 
 ```bash
-pct exec 105 -- /usr/bin/astroneer start
+pct exec "$CTID" -- /usr/bin/astroneer start
 # After startup has progressed or exited:
-pct exec 105 -- /usr/bin/astroneer logs --tail 500
-pct exec 105 -- /usr/bin/astroneer logs --game --tail 200
-pct exec 105 -- /usr/bin/astroneer diagnostics --json
-pct exec 105 -- journalctl -u astroneer -n 80 --no-pager
-pct exec 105 -- ss -lun
+pct exec "$CTID" -- /usr/bin/astroneer logs --tail 500
+pct exec "$CTID" -- /usr/bin/astroneer logs --game --tail 200
+pct exec "$CTID" -- /usr/bin/astroneer diagnostics --json
+pct exec "$CTID" -- journalctl -u astroneer -n 80 --no-pager
+pct exec "$CTID" -- ss -lun
 ```
 
 Log viewing is a snapshot; rerun it as needed. `--game` may report no log before
@@ -135,7 +137,7 @@ connection evidence separate.
 If needed, compare the exact pinned image source without executing it again:
 
 ```bash
-pct exec 105 -- docker cp astroneer-game:/usr/bin/entrypoint.sh /root/entrypoint.from-image.sh
+pct exec "$CTID" -- docker cp astroneer-game:/usr/bin/entrypoint.sh /root/entrypoint.from-image.sh
 ```
 
 Inspect that file locally at the reported line. Do not publish raw `docker inspect`
@@ -148,7 +150,7 @@ its exit code and preceding output before considering recovery. If it points to
 weaken LXC restrictions while establishing this evidence.
 
 If manual attempts hit systemd's rate limit, inspect logs first, then explicitly
-run `pct exec 105 -- systemctl reset-failed astroneer` before one further attempt.
+run `pct exec "$CTID" -- systemctl reset-failed astroneer` before one further attempt.
 The post-stop reporter can report a nonzero exit from an intentional stop as well;
 correlate timestamps rather than assuming every exit is a spontaneous crash.
 
@@ -160,4 +162,4 @@ SteamCMD operations, and verify that timeout text with a zero status continues.
 They also test repair preservation/idempotency, archive-before-remove, log redaction,
 retention and service policy. macOS Bash lacks `wait -n`; that fixture confirms its
 nonzero unsupported-option status locally, while Linux CI exercises child-exit status.
-The real pinned image and CT 105 were not executed or modified during development.
+The real pinned image and the existing guest were not executed or modified during development.

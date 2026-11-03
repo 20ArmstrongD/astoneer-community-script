@@ -1,11 +1,11 @@
 # Validation and release gates
 
-Development environment: macOS, Python 3.14. No Proxmox host/target CT was supplied,
+Development environment: macOS, Python 3.14. No Proxmox host was accessed,
 no LXC was created and no game, Docker image or Playit tunnel was executed.
 
 Executed locally:
 
-- `python3 -m unittest discover -s tests -v`: 134 offline tests passed after the Playit migration revision.
+- `python3 -m unittest discover -s tests -v`: 169 offline tests passed after the Playit migration revision.
 - `python3 -m py_compile scripts/*.py`: passed.
 - `bash -n install.sh install/*.sh scripts/astroneer scripts/entrypoint-observer.sh`: passed.
 
@@ -24,7 +24,7 @@ Public release blockers:
 - Record reviewed full source SHAs and image digests; reconcile source/image contents.
 - Resolve Docker image and Playit license inventories before redistribution decisions.
 - Run ShellCheck/shfmt and CI on Debian Python 3.11 and 3.13 as well as current Python.
-- Complete INSTALLATION's PVE 8/9 × Debian 12/13 real-host matrix with representative
+- Complete a PVE 8/9 × Debian 12/13 real-host matrix with representative
   backing filesystems, kernel and AppArmor versions.
 - Verify SteamCMD seeding, initial game setup, non-root UID permissions, dropped
   capabilities, encrypted PC join, autosave, graceful stop, reboot, update and restore.
@@ -94,7 +94,11 @@ new game INIs, disable/pause behavior and deferred two-stage boot activation.
 
 The source/runtime verification, account linking, tunnel allocation, UDP transport,
 backend registration, 60-second real game stability and external Steam join have not
-been exercised on CT 105. ShellCheck/shfmt remain unavailable locally; CI runs them.
+been exercised on a live guest. ShellCheck/shfmt remain unavailable locally; CI runs them.
 A read-only remote Git check failed because shell DNS could not resolve github.com;
 see the final work report for the actual commit/push outcome. No Proxmox deployment
 or live account/tunnel operation was performed by this development agent.
+
+## Unified networking validation
+
+169 offline tests pass after the 0.3.0 revision. Added host unattended provisioning, local/shared/direct/LAN profiles, assigned guest address validation, port mismatch rejection, no-secret shared agents, account-limit handling, missing tunnels, provider-independent game startup, state-preserving role changes, configuration rollback, game-failure separation and non-pruning network-resume backups. These use mocks; no real Playit account, LXC, game image or external Steam client was exercised. Premature game exit remains unresolved; there is no evidence that an advertised LAN IP is its cause.

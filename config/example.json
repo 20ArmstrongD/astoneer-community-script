@@ -4,11 +4,12 @@
   "owner": "Steam username",
   "password": "ChangeMe",
   "port": 8777,
-  "public_ip": "REPLACE_WITH_ASSIGNED_IPV4",
-  "mode": "direct",
+  "public_ip": "",
+  "mode": "network-pending",
   "retention": 7,
   "autostart": true,
   "external_port": 8777,
   "playit_image": "",
-  "playit_secret": ""
+  "playit_secret": "",
+  "network_preference": "playit-local"
 }

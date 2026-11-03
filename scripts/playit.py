@@ -101,13 +101,13 @@ def state():
         return {'phase': 'unknown', 'lifecycle': 'unknown', 'tunnels': [], 'ipc_available': False}
 
 
-def endpoint(ip, port, local):
+def endpoint(ip, port, local, source='playit'):
     try:
         address = ipaddress.IPv4Address(ip)
     except ValueError:
-        raise ValueError('Enter the numerical assigned Playit IPv4 from the dashboard, not a hostname or claim URL') from None
+        raise ValueError('Enter a numerical public IPv4 from the dashboard' if source == 'playit' else 'Enter the numerical public IPv4 of your router/server') from None
     if not address.is_global or address.is_multicast or address.is_reserved:
-        raise ValueError('Use the assigned globally routable Playit IPv4, never a LAN/ISP outbound address or hostname')
+        raise ValueError('Use the assigned globally routable Playit IPv4, never a LAN/ISP outbound address or hostname' if source == 'playit' else 'Direct hosting needs a globally routable public router/server IPv4; private/CGNAT addressing cannot establish inbound internet access')
     if type(port) is not int or type(local) is not int or not 1024 <= port <= 65535:
         raise ValueError('UDP port must be an integer 1024..65535')
     if local != port:
@@ -218,15 +218,15 @@ def setup(m, relink=False):
     print('Then run astroneer playit configure. No game/network configuration has been changed.')
 
 
-def snapshot(m, c):
+def snapshot(m, c, include_game=True):
     _, _, journal = paths(m)
     if journal.exists():
         raise ValueError('Interrupted network transaction exists. Run astroneer playit configure --rollback before another change')
     target = m.BACK / ('network-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ'))
     target.mkdir(parents=True, mode=0o700)
-    files = [m.CONF, m.CONF.parent/'server.env', m.UNIT, m.CONF.parent/'playit-disabled', paths(m)[0],
-             m.BASE/'game/Astro/Saved/Config/WindowsServer/Engine.ini',
-             m.BASE/'game/Astro/Saved/Config/WindowsServer/AstroServerSettings.ini']
+    files = [m.CONF, m.CONF.parent/'server.env', m.UNIT, m.CONF.parent/'playit-disabled', paths(m)[0], m.CONF.parent/'network.json']
+    if include_game:
+        files.extend([m.BASE/'game/Astro/Saved/Config/WindowsServer/Engine.ini', m.BASE/'game/Astro/Saved/Config/WindowsServer/AstroServerSettings.ini'])
     records = []
     for index, path in enumerate(files):
         if path.exists():
@@ -249,11 +249,10 @@ def rollback(m):
     if not journal.exists():
         raise ValueError('No pending network transaction to roll back')
     target = Path(json.loads(journal.read_text())['snapshot'])
-    if target.parent != m.BACK or not target.name.startswith('network-'):
+    if target.resolve().parent != m.BACK.resolve() or not target.name.startswith('network-'):
         raise ValueError('Invalid recovery snapshot location')
     manifest = json.loads((target/'manifest.json').read_text())
     m.run(['systemctl', 'stop', 'astroneer'])
-    m.run(['systemctl', 'stop', SERVICE])
     for record in manifest['files']:
         path = Path(record['path'])
         if record['file'] is None:
@@ -265,25 +264,14 @@ def rollback(m):
             os.chown(path, record['uid'], record['gid'])
     m.run(['systemctl', 'daemon-reload'])
     old = m.load()
-    m.run(['systemctl', 'enable' if old['autostart'] and old['mode'] != 'playit-pending' else 'disable', 'astroneer'])
-    m.run(['systemctl', 'disable', SERVICE])
+    m.run(['systemctl', 'enable' if old['autostart'] and old['mode'] not in m.PENDING else 'disable', 'astroneer'])
     journal.unlink()
-    print(f'Network configuration restored from {target}. Game and agent left stopped; forensic logs/saves retained.')
+    print(f'Network configuration restored from {target}. Game left stopped; agents/registrations unchanged and saves retained.')
 
 
 def stable(m, seconds=60):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        evidence = m.runtime_probe(m.load()['port'])
-        if not evidence or not evidence.get('ready'):
-            raise RuntimeError('GAME FAILURE during 60-second stabilization. Inspect CHILD_EXIT/GAME_EVENT and Wine logs; do not infer a tunnel failure')
-        agent = state()
-        if agent['phase'] != 'running' or agent['lifecycle'] != 'running' or not agent['tunnels']:
-            raise RuntimeError('PLAYIT CONTROL FAILURE during stabilization; local game readiness and external reachability are separate')
-        checks = status(m)
-        if any(row['state'] != 'PASS' for row in checks if row['check'] in ('playit_agent', 'endpoint_configuration')):
-            raise RuntimeError('PLAYIT ENDPOINT/CONTROL FAILURE during stabilization; allocation or agent state changed')
-        time.sleep(2)
+    import network
+    return network.observe(m, seconds)
 
 
 def network_env(text, ip, port):
@@ -301,50 +289,21 @@ def network_env(text, ip, port):
 
 
 def migrate(m, ip, port):
-    c = m.load(); meta = load_meta(m); _, key, journal = paths(m)
-    if journal.exists():
-        raise ValueError('Interrupted transaction exists; configure --rollback before another change')
-    ip, port = endpoint(ip, port, port)
-    secret = key.read_text().strip()
-    original_env = (m.CONF.parent/'server.env').read_text()
-    actual = dict(line.split('=', 1) for line in original_env.splitlines() if '=' in line and not line.startswith('#'))
-    identity = {field: actual.get(variable, c[field]) for field, variable in [('name', 'ASTRO_SERVER_NAME'), ('owner', 'ASTRO_SERVER_OWNER_NAME'), ('password', 'ASTRO_SERVER_PASSWORD')]}
-    new = dict(c, **identity)
-    new.update(mode='playit', public_ip=ip, port=port, external_port=port, playit_image=meta['image'], playit_secret=secret)
-    m.validate(new)
-    if new == c and not (m.CONF.parent/'playit-disabled').exists():
-        print('Already configured identically; no restart or game-file changes. Use playit test for current health.')
-        return
-    m.run(['systemctl', 'stop', 'astroneer'])
-    snapshot(m, c)
-    try:
-        port_free(port)
-        m.backup(c, prune=False)
-        m.run(['systemctl', 'enable', '--now', SERVICE])
-        (m.CONF.parent/'playit-disabled').unlink(missing_ok=True)
-        meta['operator_endpoint'] = {'public_ip': ip, 'port': port, 'origin': f'127.0.0.1:{port}', 'custom_udp_confirmed': True}
-        m.atomic(paths(m)[0], json.dumps(meta, indent=2))
-        m.apply(new)
-        m.atomic(m.CONF.parent/'server.env', network_env(original_env, ip, port))
-        m.run(['systemctl', 'start', 'astroneer'])
-        stable(m)
-        meta.update(configured=True, public_ip=ip, port=port, confirmed_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
-        m.atomic(paths(m)[0], json.dumps(meta, indent=2))
-        journal.unlink()
-    except (Exception, KeyboardInterrupt):
-        try:
-            rollback(m)
-        except Exception:
-            raise RuntimeError('Network change failed and rollback is incomplete. Services must remain stopped; use configure --rollback and inspect the private transaction journal') from None
-        raise
-    print(f'Configured {ip}:{port} -> 127.0.0.1:{port}. Local game stable for 60s; external UDP, registration and Steam join remain unverified.')
+    # Compatibility for callers of the former local-only helper.
+    import network
+    desired = network.plan(m, 'playit-local', ip, port)
+    return network.apply_plan(m, desired)
 
 
-def configure(m, public_ip=None, public_port=None, local_port=None, yes=False):
+def select_endpoint(m, public_ip=None, public_port=None, local_port=None, yes=False):
     load_meta(m)
     agent = state()
+    if agent['phase'] == 'has_invalid_secret':
+        raise ValueError('Playit rejected the local agent secret. Run astroneer playit setup --relink; no game settings changed')
+    if agent['phase'] == 'disabled_over_limit':
+        raise ValueError('Playit account limit reached. Review agents/tunnels in the dashboard or choose an existing shared agent; no registrations were deleted')
     if agent['phase'] != 'running' or agent['lifecycle'] != 'running':
-        raise ValueError('Agent IPC is unavailable/not running. Check account linking and agent service; no game settings changed')
+        raise ValueError('Local agent is starting or IPC is unavailable. Check playit status and account linking; use network configure --mode playit-existing for an agent elsewhere')
     if not agent['tunnels']:
         raise ValueError('No enabled tunnel configured. Create Custom UDP in Playit dashboard and rerun configure')
     if public_ip is not None or public_port is not None or local_port is not None:
@@ -391,12 +350,27 @@ def configure(m, public_ip=None, public_port=None, local_port=None, yes=False):
         ip, port = candidates[int(choice)-1]
     print('Compare this exact IPv4/port with the Playit dashboard. Confirm tunnel type Custom UDP and Proxy Protocol None.')
     print('No router forwarding is required. A public endpoint does not guarantee the game will stay running.')
-    if not yes and input('Type CONFIGURE to approve this endpoint and a 60-second game test: ') != 'CONFIGURE':
+    if not yes and input('Type CONFIGURE to approve this public endpoint: ') != 'CONFIGURE':
         raise ValueError('Network change cancelled')
-    migrate(m, ip, port)
+    return ip, port
+
+
+def configure(m, public_ip=None, public_port=None, local_port=None, yes=False, agent=None, destination_ip=None, start=False):
+    import network
+    from types import SimpleNamespace
+    mode = 'playit-existing' if agent == 'existing' or agent is None and (m.load()['mode'] == 'playit-external' or not paths(m)[0].exists()) else 'playit-local'
+    args = SimpleNamespace(mode=mode, public_ip=public_ip, port=public_port, local_port=local_port,
+                           destination_ip=destination_ip, yes=yes, start=start,
+                           agent_tag=None, agent_secret_file=None, approve_image=False)
+    return network.configure(m, args)
 
 
 def status(m, testing=False):
+    import network
+    return network.status(m, testing=testing)
+
+
+def local_status(m, testing=False):
     c = m.load(); meta, _, journal = paths(m)
     agent = state() if meta.exists() else {'phase': 'not-installed', 'lifecycle': 'unknown', 'tunnels': [], 'ipc_available': False}
     rows = []
@@ -407,7 +381,10 @@ def status(m, testing=False):
     applying = journal.exists() and transaction_active(m)
     add('transaction', 'WARN' if applying else 'FAIL' if journal.exists() else 'PASS', 'Migration in progress; not committed yet' if applying else 'Recovery needed: configure --rollback' if journal.exists() else 'No incomplete network transaction')
     running = m.run(['systemctl', 'is-active', '--quiet', SERVICE], False).returncode == 0
-    add('playit_agent', 'PASS' if running and agent['phase'] == 'running' else 'FAIL', 'Agent phase=' + str(agent['phase']))
+    guidance = {'has_invalid_secret': 'Authentication failed: run astroneer playit setup --relink', 'disabled_over_limit': 'Account limit: review the dashboard or choose an existing shared agent', 'unknown': 'IPC unavailable: check the managed agent unit/version; shared agents use existing-agent mode'}.get(agent['phase'], 'Agent phase=' + str(agent['phase']))
+    add('playit_agent', 'PASS' if running and agent['phase'] == 'running' else 'FAIL', guidance)
+    key = paths(m)[1]
+    add('local_agent_credentials', 'PASS' if key.is_file() and key.stat().st_mode & 0o077 == 0 else 'WARN', 'Private credential file present' if key.is_file() else 'Credential file missing: use local setup; shared agents do not need a local secret')
     add('tunnel_configured', 'PASS' if agent['tunnels'] else 'WARN', 'Enabled tunnel reported by IPC; UDP type needs dashboard confirmation' if agent['tunnels'] else 'No enabled tunnel observed; run setup/configure')
     match = False; conflict = False
     for tunnel in agent['tunnels']:
@@ -452,25 +429,16 @@ def transaction_active(m):
 
 
 def guard(m):
-    if paths(m)[2].exists() and not transaction_active(m):
-        raise ValueError('Interrupted network transaction; configure --rollback before starting the game')
-    if (m.CONF.parent/'playit-disabled').exists():
-        raise ValueError('Playit disabled by operator; run setup/configure before game start')
-    checks = status(m)
-    required = ('playit_agent', 'tunnel_configured', 'endpoint_configuration')
-    if any(row['state'] != 'PASS' for row in checks if row['check'] in required):
-        raise ValueError('Playit agent/tunnel/endpoint not ready; run astroneer playit status/configure. Transport and backend remain independent checks')
+    import network
+    return network.guard(m)
 
 
 def disable(m):
     c = m.load(); _, _, journal = paths(m)
     if journal.exists():
         raise ValueError('Pending transaction exists; use configure --rollback first')
-    if c['mode'] in ('playit', 'playit-pending'):
-        m.run(['systemctl', 'stop', 'astroneer'])
-        m.run(['systemctl', 'disable', 'astroneer'])
     m.run(['systemctl', 'disable', '--now', SERVICE], paths(m)[0].exists())
     # Keep endpoint/config/identity intact for safe re-enable; prevent game starts
     # against a disabled tunnel using a private operator pause marker.
-    m.atomic(m.CONF.parent/'playit-disabled', 'Disabled by operator; run playit setup/configure to re-enable\n')
-    print('Game stopped and agent disabled. Endpoint, credentials and saves retained. No LAN/direct fallback; setup/configure re-enables explicitly.')
+    m.atomic(m.CONF.parent/'playit-disabled', 'Local agent paused; game management is independent\n')
+    print('Managed local agent disabled; game and network settings unchanged. Registration/credentials retained. Shared agents were not contacted.')

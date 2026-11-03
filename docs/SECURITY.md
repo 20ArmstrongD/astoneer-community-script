@@ -69,3 +69,7 @@ Network snapshots contain passwords and original INIs; keep them private. Existi
 backup archives are not pruned by the migration backup. Explicit --yes means the
 operator confirmed the dashboard allocation/UDP type; it grants no provider approval
 and does not convert unknown reachability or registration into a verified result.
+
+## Shared networking
+
+Shared agents require no local secret or dependency. Only assigned guest destinations are accepted; route availability remains the operator's responsibility. Local agent registration/key files are retained across mode changes and disable operations. The core configuration no longer duplicates the agent secret during network migration; old private backups may still contain it and must remain protected. Rollback never edits provider tunnels. Game startup does not depend on provider availability.

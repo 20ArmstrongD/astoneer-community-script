@@ -74,18 +74,10 @@ The systemd ExecStartPost gate uses the same evidence before activation; ExecSto
 also stops a leftover Docker workload after failed activation. No image rebuild,
 machine-id injection, library installation or capability/security changes occur.
 
-## Playit migration revision
+## Unified networking revision (0.3.0)
 
-The existing guest can now be migrated without the host wizard. The agent is a
-separate digest-pinned systemd/Docker workload with guest host networking, dropped
-capabilities and no-new-privileges. Direct daemon secret-file flags avoid exposing
-its secret in argv. A private IPC v2 client inspects status/tunnels; dashboard
-linking and Custom UDP creation remain explicit operator actions. Only provider
-interfaces verified in upstream source are implemented; unknown protocol versions
-fail closed and transport reachability is not inferred from daemon lifecycle.
+Game lifecycle is independent of networking infrastructure. The game unit has no local-agent Requires/After relationship. Local Playit remains an optional, separately managed pinned workload; shared Playit requires neither a key nor a local workload. A private network profile records role and destination. Legacy local installations retain their keys and work after repair.
 
-New installs default to a two-stage pending mode. Existing migration journals exact
-network/config files, takes a non-pruning backup, sets agent-before-game ordering,
-applies the confirmed allocation and tests local stability for 60 seconds. Failure
-restores configuration while preserving saves/evidence and leaves services stopped.
-The game digest, Wine supervisor, cgroup diagnostics and LXC permissions are retained.
+Networking configuration journals exact files and retains snapshots. Runtime changes take a stopped, non-pruning backup; metadata-only role changes avoid interrupting an unchanged runtime. Configuration errors roll back; a later game startup failure preserves the selected endpoint and is reported separately. Provider tunnel edits remain explicit dashboard actions. No local-agent availability gate is imposed on game startup.
+
+Reviewed the accessible valheim-community-script repository for consistent lifecycle CLI, private configuration, stopped backups, diagnostics and state-preserving upgrades. These conventions inform this project; its native runtime and signal behavior are not copied into Astroneer's Proton supervision. No Valheim source was incorporated.

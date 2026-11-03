@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 
@@ -88,32 +89,23 @@ def select_image(kind):
 
 
 def network(c):
-    c['mode'] = ask('Network mode playit/direct/lan (Playit recommended)', 'playit')
-    if c['mode'] not in ('direct', 'playit', 'lan'):
-        raise ValueError('Network mode must be direct, playit or lan')
-    provenance = None
-    if c['mode'] == 'playit':
-        print('Recommended two-stage setup: install the runtime now; link the account and create a Custom UDP tunnel inside the guest later.')
-        print('No public endpoint is required yet. After installation run astroneer playit setup, then astroneer playit configure.')
-        c.update(mode='playit-pending', public_ip='', port=8777, external_port=8777)
-    elif c['mode'] == 'direct':
-        print('Direct mode requires a public router/server IPv4. Forward UDP to the CT and allow it in the applicable firewalls.')
-        print('CGNAT is not a public allocation. Local and external UDP ports must match.')
-        c['public_ip'] = ask('Public router/server IPv4 advertised to clients')
-        c['port'] = number('Local game UDP port', 8777, 1024, 65535)
-        c['external_port'] = number('Actual router external UDP port', c['port'], 1024, 65535)
-    else:
-        print('LAN mode is experimental: no public forwarding is requested; backend registration and LAN joins may fail.')
-        c['public_ip'] = ask('CT LAN IPv4 to advertise (choose static IPv4 or a DHCP reservation)')
-        c['port'] = number('Local game UDP port', 8777, 1024, 65535)
-        c['external_port'] = c['port']
+    print('Astroneer Dedicated Server Setup\nHow would you like players to connect?')
+    print('1. Playit.gg — Create new agent (recommended if you have none)')
+    print('2. Playit.gg — Use existing shared agent (no new agent or secret needed)')
+    print('3. Direct connection (public IPv4 and router forwarding)')
+    print('4. LAN testing (public reachability not established)')
+    choice = ask('Select', '1')
+    # Accept previous textual choices for scripts driving the old wizard.
+    choice = {'playit': '1', 'direct': '3', 'lan': '4'}.get(choice, choice)
+    if choice not in ('1', '2', '3', '4'):
+        raise ValueError('Select 1, 2, 3 or 4')
+    preference = {'1': 'playit-local', '2': 'playit-existing', '3': 'direct', '4': 'lan'}[choice]
+    c.update(mode='network-pending', public_ip='', port=8777, external_port=8777, network_preference=preference)
+    print('Connection settings will be completed inside the new guest with astroneer network configure.')
+    print('No public endpoint is required before installation; this guest address is discovered after networking starts.')
     validate(c)
-    if c['mode'] == 'playit-pending':
-        print('Network setup INCOMPLETE: advertised endpoint unassigned; game startup deferred.')
-    else:
-        print(f"Network mode={c['mode']}; local UDP=0.0.0.0:{c['port']}; advertised={c['public_ip']}:{c['external_port']}")
-    print('Endpoint assignment, external UDP reachability, backend registration and client join require independent verification.')
-    return provenance
+    print('Network setup INCOMPLETE: endpoint deferred; game stays stopped.')
+    return None
 
 
 def create_args(h, template, autostart):
@@ -134,11 +126,76 @@ def create_args(h, template, autostart):
     return args
 
 
-def main(argv=None):
+def validate_host(h):
+    for key, lo, hi in [('id', 100, 999999999), ('cores', 2, 128), ('ram', 4096, 1048576), ('swap', 0, 1048576), ('disk', 30, 65536)]:
+        if type(h[key]) is not int or not lo <= h[key] <= hi:
+            raise ValueError(f'{key}: expected {lo}..{hi}')
+    for key in ('hostname', 'storage', 'bridge'):
+        token(h[key], key)
+    if h['ip'] != 'dhcp':
+        ipaddress.IPv4Interface(h['ip'])
+        if not h['gateway']:
+            raise ValueError('Static IPv4 requires --gateway')
+        ipaddress.IPv4Address(h['gateway'])
+    elif h['gateway']:
+        raise ValueError('DHCP mode does not use an explicit gateway')
+    if h['vlan'] and (not str(h['vlan']).isdecimal() or not 1 <= int(h['vlan']) <= 4094):
+        raise ValueError('VLAN must be 1..4094')
+    if h['dns']:
+        ipaddress.IPv4Address(h['dns'])
+    if h['search']:
+        token(h['search'], 'DNS search domain')
+    return h
+
+
+def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--advanced', action='store_true')
+    p.add_argument('--advanced', action='store_true', help='Show advanced interactive container options')
     p.add_argument('--template', required=True, help='Existing trusted Debian 12/13 amd64 template volume ID')
-    a = p.parse_args(argv)
+    p.add_argument('--yes', action='store_true', help='Create a new guest without prompts; requires identity/secret/image approval flags')
+    p.add_argument('--ctid', type=int); p.add_argument('--hostname', default='astroneer')
+    p.add_argument('--storage', default='local-lvm'); p.add_argument('--bridge', default='vmbr0')
+    p.add_argument('--cores', type=int, default=2); p.add_argument('--ram', type=int, default=4096)
+    p.add_argument('--swap', type=int, default=1024); p.add_argument('--disk', type=int, default=30)
+    p.add_argument('--ipv4', default='dhcp'); p.add_argument('--gateway', default='')
+    p.add_argument('--vlan', default=''); p.add_argument('--dns', default=''); p.add_argument('--search-domain', default='')
+    p.add_argument('--server-name', default='Astroneer'); p.add_argument('--owner')
+    p.add_argument('--password-file', type=Path, help='Regular root-owned 0600 file; never put the game password in argv')
+    p.add_argument('--image-tag', default='latest'); p.add_argument('--approve-image', action='store_true')
+    p.add_argument('--network-mode', choices=('playit-local', 'playit-existing', 'direct', 'lan'), default='playit-local')
+    p.add_argument('--no-autostart', action='store_true')
+    return p
+
+
+def unattended(a):
+    if a.ctid is None or not a.owner or a.password_file is None or not a.approve_image:
+        raise ValueError('--yes requires --ctid, --owner, --password-file and --approve-image; secrets are never CLI values')
+    h = validate_host({'id': a.ctid, 'hostname': a.hostname, 'storage': a.storage,
+                       'cores': a.cores, 'ram': a.ram, 'swap': a.swap, 'disk': a.disk,
+                       'bridge': a.bridge, 'ip': a.ipv4, 'gateway': a.gateway, 'vlan': str(a.vlan),
+                       'dns': a.dns, 'search': a.search_domain})
+    st = a.password_file.lstat()
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        raise ValueError('--password-file must be a regular root-owned 0600 file')
+    password = a.password_file.read_text().rstrip('\r\n')
+    record = resolve('game', a.image_tag)
+    print(json.dumps(record, indent=2, ensure_ascii=True))
+    record['approved'] = True
+    c = validate({'image': record['image'], 'name': a.server_name, 'owner': a.owner,
+                  'password': password, 'retention': 7, 'autostart': not a.no_autostart,
+                  'playit_image': '', 'playit_secret': '', 'mode': 'network-pending',
+                  'public_ip': '', 'port': 8777, 'external_port': 8777,
+                  'network_preference': a.network_mode})
+    return h, c, {'game': record, 'playit': None}
+
+
+def main(argv=None):
+    a = parser().parse_args(argv)
+    if a.yes and a.advanced:
+        raise ValueError('--advanced is interactive; use resource flags with --yes instead')
+    explicit = (a.ctid is not None or a.owner or a.password_file is not None or a.approve_image or a.no_autostart or a.hostname != 'astroneer' or a.storage != 'local-lvm' or a.bridge != 'vmbr0' or a.cores != 2 or a.ram != 4096 or a.swap != 1024 or a.disk != 30 or a.ipv4 != 'dhcp' or a.gateway or a.vlan or a.dns or a.search_domain or a.server_name != 'Astroneer' or a.image_tag != 'latest' or a.network_mode != 'playit-local')
+    if explicit and not a.yes:
+        raise ValueError('Automation resource/identity flags require --yes; use --advanced for interactive choices')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+:vztmpl/debian-(12|13)-[A-Za-z0-9_.-]+_amd64.tar.(zst|xz|gz)', a.template):
         raise ValueError('Use a Debian 12/13 amd64 template from pveam')
     if os.geteuid() != 0:
@@ -146,17 +203,18 @@ def main(argv=None):
     version = run(['pveversion']).stdout
     if not re.match(r'pve-manager/[89]\.', version):
         raise ValueError('Only Proxmox VE 8/9 are targeted; deployment compatibility requires testing')
-    if not sys.stdin.isatty():
-        raise ValueError('Host installation requires an interactive terminal')
+    if not a.yes and not sys.stdin.isatty():
+        raise ValueError('Use an interactive terminal, or --yes with the documented automation flags')
     if os.uname().machine != 'x86_64':
         raise ValueError('Requires an amd64/x86_64 Proxmox host; ARM emulation is unsupported')
-    h, c, provenance = wizard(a.advanced)
+    h, c, provenance = unattended(a) if a.yes else wizard(a.advanced)
+    validate_host(h)
     # A cluster-wide nextid is advisory; pct create provides final uniqueness check.
     if run(['pct', 'config', str(h['id'])], False).returncode == 0 or run(['qm', 'config', str(h['id'])], False).returncode == 0:
         raise ValueError('ID already exists; no guest was modified')
     print(json.dumps(h, indent=2))
     print('Unprivileged container; nesting/keyctl enabled. No firewall rules are changed.')
-    if input('Type CREATE to create this new container: ') != 'CREATE':
+    if not a.yes and input('Type CREATE to create this new container: ') != 'CREATE':
         raise ValueError('Cancelled')
     created = False
     try:
@@ -175,8 +233,8 @@ def main(argv=None):
         run(['pct', 'exec', h['id'], '--', 'tar', '-xf', '/root/astroneer-project.tar', '-C', '/root/astroneer-project'])
         run(['pct', 'exec', h['id'], '--', 'bash', '/root/astroneer-project/install/astroneer-install.sh', '/root/astroneer-config.json', '/root/astroneer-image-provenance.json'])
         print(f'Installation command completed. Verify with: pct exec {h["id"]} -- astroneer diagnostics')
-        if c['mode'] == 'playit-pending':
-            print(f'Playit setup INCOMPLETE; game intentionally stopped. Run pct enter {h["id"]}, then astroneer playit setup and astroneer playit configure.')
+        if c['mode'] in ('playit-pending', 'network-pending'):
+            print(f'Network setup INCOMPLETE; game intentionally stopped. Run pct enter {h["id"]}, then astroneer network configure.')
     except Exception:
         if created:
             print(f'Partial installation retained in CT {h["id"]}. No guest was destroyed. Inspect and rerun the guest installer after correcting the cause.', file=sys.stderr)

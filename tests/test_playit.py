@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import manage as m
 import playit as p
+import network as n
 from test_project import config, result
 
 AGENT_IMAGE = 'ghcr.io/playit-cloud/playit-agent@sha256:'+'b'*64
@@ -91,7 +92,7 @@ class Migration(unittest.TestCase):
         root = Path(tmp.name)
         self.conf = root/'etc/config.json'; self.unit = root/'units/astroneer.service'
         self.base = root/'data'; self.back = root/'backups'
-        for key, value in [('CONF', self.conf), ('UNIT', self.unit), ('BASE', self.base), ('BACK', self.back)]:
+        for key, value in [('CONF', self.conf), ('UNIT', self.unit), ('BASE', self.base), ('BACK', self.back), ('LOCK', root/'run/astroneer.lock')]:
             patcher = patch.object(m, key, value); patcher.start(); self.addCleanup(patcher.stop)
         self.old = dict(config(), mode='lan', public_ip='192.168.1.150', owner='ExistingOwner')
         m.atomic(self.conf, json.dumps(self.old)); m.atomic(self.conf.parent/'server.env', m.env(self.old)+'CUSTOM_RUNTIME=keep\n')
@@ -105,7 +106,7 @@ class Migration(unittest.TestCase):
 
     def test_lan_to_playit_preserves_identity_image_data_and_backups(self):
         with patch.object(m, 'run', return_value=result()) as run, patch.object(m, 'backup') as backup, patch.object(p, 'port_free'), patch.object(p, 'stable'):
-            p.migrate(m, '8.8.8.8', 12345)
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         c = m.load()
         for key in ('password', 'owner', 'name', 'image', 'autostart'):
             self.assertEqual(c[key], self.old[key])
@@ -115,24 +116,27 @@ class Migration(unittest.TestCase):
         self.assertEqual(self.ini.read_bytes(), b'original-\xff-ini')
         backup.assert_called_once_with(self.old, prune=False)
         calls = [call.args[0] for call in run.call_args_list]
-        self.assertLess(calls.index(['systemctl', 'enable', '--now', p.SERVICE]), calls.index(['systemctl', 'start', 'astroneer']))
-        self.assertIn('Requires=astroneer-playit.service', self.unit.read_text())
+        self.assertFalse(any(p.SERVICE in call for call in calls))
+        self.assertNotIn('Requires=astroneer-playit.service', self.unit.read_text())
+        self.assertEqual(c['playit_secret'], '')
         self.assertFalse(p.paths(m)[2].exists())
 
     def test_identical_configuration_does_not_restart(self):
         with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(p, 'stable'):
-            p.migrate(m, '8.8.8.8', 12345)
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         with patch.object(m, 'run') as run, patch.object(m, 'backup') as backup:
-            p.migrate(m, '8.8.8.8', 12345)
-        run.assert_not_called(); backup.assert_not_called()
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
+        self.assertFalse(any('start' in call.args[0] or 'stop' in call.args[0] for call in run.call_args_list)); backup.assert_not_called()
 
-    def test_game_failure_restores_exact_configuration_and_ini_bytes(self):
+    def test_configuration_write_failure_restores_exact_ini_bytes(self):
         before = self.conf.read_bytes(), (self.conf.parent/'server.env').read_bytes(), self.unit.read_bytes(), self.ini.read_bytes()
-        def fail(module):
+        original_apply = m.apply
+        def fail(values):
+            original_apply(values)
             self.ini.write_bytes(b'new generated ini')
-            raise RuntimeError('GAME FAILURE')
-        with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(p, 'stable', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'GAME FAILURE'):
-            p.migrate(m, '8.8.8.8', 12345)
+            raise RuntimeError('WRITE FAILURE')
+        with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(m, 'apply', side_effect=fail), self.assertRaisesRegex(RuntimeError, 'WRITE FAILURE'):
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         after = self.conf.read_bytes(), (self.conf.parent/'server.env').read_bytes(), self.unit.read_bytes(), self.ini.read_bytes()
         self.assertEqual(before, after)
         self.assertEqual((self.base/'persistent.savegame').read_bytes(), b'keep save')
@@ -140,38 +144,41 @@ class Migration(unittest.TestCase):
 
     def test_occupied_port_rolls_back_without_starting(self):
         with patch.object(m, 'run', return_value=result()) as run, patch.object(p, 'port_free', side_effect=ValueError('occupied')), self.assertRaises(ValueError):
-            p.migrate(m, '8.8.8.8', 12345)
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         self.assertEqual(m.load(), self.old)
         self.assertNotIn(['systemctl', 'start', 'astroneer'], [c.args[0] for c in run.call_args_list])
 
     def test_interrupted_transaction_requires_explicit_recovery(self):
         p.snapshot(m, self.old)
-        with self.assertRaisesRegex(ValueError, 'Interrupted transaction'):
-            p.migrate(m, '8.8.8.8', 12345)
+        with self.assertRaisesRegex(ValueError, 'Interrupted network change'):
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         with patch.object(m, 'run', return_value=result()):
             p.rollback(m)
         self.assertEqual(m.load(), self.old)
 
     def test_no_tunnel_configured_is_actionable(self):
-        with patch.object(p, 'state', return_value=dict(connected(), tunnels=[])), self.assertRaisesRegex(ValueError, 'No enabled tunnel'):
+        with patch.object(p, 'state', return_value=dict(connected(), tunnels=[])), patch.object(p, 'setup'), self.assertRaisesRegex(ValueError, 'No enabled tunnel'):
             p.configure(m, yes=True)
 
     def test_configure_checks_actual_assigned_port_and_confirmation(self):
-        with patch.object(p, 'state', return_value=connected()), patch.object(p.socket, 'getaddrinfo', side_effect=dns), patch.object(p, 'migrate') as migrate:
+        with patch.object(p, 'state', return_value=connected()), patch.object(p.socket, 'getaddrinfo', side_effect=dns), patch.object(n, 'apply_plan') as migrate, patch.object(p, 'setup'):
             p.configure(m, yes=True)
-        migrate.assert_called_once_with(m, '8.8.8.8', 12345)
+        self.assertEqual(migrate.call_args.args[1]['public_ip'], '8.8.8.8')
+        self.assertEqual(migrate.call_args.args[1]['port'], 12345)
 
     def test_explicit_bad_port_mapping_refused(self):
         with patch.object(p, 'state', return_value=connected()), self.assertRaisesRegex(ValueError, 'Port mismatch'):
             p.configure(m, '8.8.8.8', 12345, 8777, True)
 
-    def test_agent_failure_distinct_from_game_failure(self):
-        with patch.object(p, 'state', return_value=dict(connected(), phase='error')), patch.object(m, 'runtime_probe', return_value={'ready': True}), self.assertRaisesRegex(RuntimeError, 'PLAYIT CONTROL FAILURE'):
-            p.stable(m)
+    def test_agent_failure_does_not_gate_game_observation(self):
+        with patch.object(p, 'state') as agent, patch.object(m, 'runtime_probe', return_value={'ready': True}), patch.object(p.time, 'monotonic', side_effect=[0, 0.1, 2]), patch.object(p.time, 'sleep'):
+            p.stable(m, seconds=1)
+        agent.assert_not_called()
         with patch.object(m, 'runtime_probe', return_value={'ready': False}), self.assertRaisesRegex(RuntimeError, 'GAME FAILURE'):
-            p.stable(m)
+            p.stable(m, seconds=1)
 
     def test_status_separates_unverified_transport_from_local_game(self):
+        m.atomic(self.conf, json.dumps(dict(self.old, mode='playit', public_ip='8.8.8.8', playit_image=AGENT_IMAGE, playit_secret=AGENT_SECRET)))
         with patch.object(p, 'state', return_value=connected()), patch.object(p.socket, 'getaddrinfo', side_effect=dns), patch.object(m, 'run', return_value=result()), patch.object(m, 'runtime_probe', return_value={'ready': False, 'game_pids': []}):
             rows = {row['check']: row for row in p.status(m, True)}
         self.assertEqual(rows['playit_agent']['state'], 'PASS')
@@ -211,8 +218,7 @@ class Migration(unittest.TestCase):
             p.disable(m)
         self.assertEqual(self.conf.read_bytes(), before)
         self.assertTrue((self.conf.parent/'playit-disabled').exists())
-        with self.assertRaisesRegex(ValueError, 'disabled by operator'):
-            p.guard(m)
+        p.guard(m)  # The agent pause does not gate game startup.
 
     def test_fresh_setup_requires_approval_and_hides_agent_secret(self):
         p.paths(m)[0].unlink(); p.paths(m)[1].unlink()
@@ -231,9 +237,9 @@ class Migration(unittest.TestCase):
             p.setup(m)
         password.assert_not_called()
 
-    def test_cancel_during_stabilization_rolls_back(self):
-        with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(p, 'stable', side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
-            p.migrate(m, '8.8.8.8', 12345)
+    def test_cancel_during_configuration_rolls_back(self):
+        with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(m, 'apply', side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         self.assertEqual(m.load(), self.old)
         self.assertFalse(p.paths(m)[2].exists())
 
@@ -247,12 +253,12 @@ class Migration(unittest.TestCase):
 
     def test_dead_transaction_owner_blocks_start(self):
         m.atomic(p.paths(m)[2], json.dumps({'pid': 999999999, 'start_ticks': '0', 'snapshot': 'unused'}))
-        with self.assertRaisesRegex(ValueError, 'Interrupted network transaction'):
+        with self.assertRaisesRegex(ValueError, 'Interrupted network change'):
             p.guard(m)
 
     def test_failed_rollback_retains_recovery_journal(self):
-        with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(p, 'stable', side_effect=RuntimeError('GAME FAILURE')), patch.object(p, 'rollback', side_effect=OSError('disk full')), self.assertRaisesRegex(RuntimeError, 'rollback is incomplete'):
-            p.migrate(m, '8.8.8.8', 12345)
+        with patch.object(m, 'run', return_value=result()), patch.object(m, 'backup'), patch.object(p, 'port_free'), patch.object(m, 'apply', side_effect=RuntimeError('WRITE FAILURE')), patch.object(p, 'rollback', side_effect=OSError('disk full')), self.assertRaisesRegex(RuntimeError, 'rollback is incomplete'):
+            n.apply_plan(m, n.plan(m, 'playit-local', '8.8.8.8', 12345))
         self.assertTrue(p.paths(m)[2].exists())
 
     def test_manual_dashboard_endpoint_keeps_independent_match_unknown(self):
@@ -271,8 +277,10 @@ class Migration(unittest.TestCase):
         current = dict(self.old, mode='playit', public_ip='8.8.4.4', port=12345, external_port=12345, playit_image=AGENT_IMAGE, playit_secret=AGENT_SECRET)
         m.atomic(self.conf, json.dumps(current))
         m.atomic(p.paths(m)[0], json.dumps({'image': AGENT_IMAGE, 'operator_endpoint': {'public_ip': '8.8.4.4', 'port': 12345, 'origin': '127.0.0.1:12345', 'custom_udp_confirmed': True}}))
-        with patch.object(p, 'state', return_value=connected()), patch.object(p.socket, 'getaddrinfo', side_effect=dns), patch.object(m, 'run', return_value=result()), self.assertRaisesRegex(ValueError, 'endpoint not ready'):
+        with patch.object(p, 'state', return_value=connected()), patch.object(p.socket, 'getaddrinfo', side_effect=dns), patch.object(m, 'run', return_value=result()):
             p.guard(m)
+            rows = {row['check']: row for row in p.status(m)}
+        self.assertEqual(rows['endpoint_configuration']['state'], 'WARN')
 
     def test_stabilization_checks_game_agent_and_endpoint(self):
         current = dict(self.old, mode='playit', public_ip='8.8.8.8', port=12345, external_port=12345, playit_image=AGENT_IMAGE, playit_secret=AGENT_SECRET)

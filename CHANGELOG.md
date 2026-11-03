@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Add a unified interactive/network automation workflow for local Playit, shared Playit, direct and LAN.
+- Remove the game service dependency on a local agent; preserve game supervision and image approval.
+- Validate assigned guest destinations and matching UDP ports without requiring remote agent secrets.
+- Add transactional snapshots/rollback, non-pruning backups and independent startup/connectivity evidence.
+- Defer new-install endpoints, add explicit host automation and generic in-place upgrade/migration guidance.
+- Expand offline tests to 169; live game startup and external connectivity remain unverified.
+
+
 ## 0.2.0 — unreleased
 
 - Add in-place Playit setup/status/configure/test/disable CLI commands, official
