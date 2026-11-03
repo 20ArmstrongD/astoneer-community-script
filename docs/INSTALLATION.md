@@ -25,8 +25,10 @@ run against an existing guest ID. No automated deployment occurred during develo
    ```
 
    Select a free CT ID, appropriate storage and bridge. DHCP is the default;
-   static mode requires IPv4 CIDR and gateway. Choose direct, playit or lan and
-   enter the endpoint requested for that mode. Direct requires your public IPv4 and
+   static mode requires IPv4 CIDR and gateway. Choose recommended playit or direct/lan. Playit records setup as incomplete and
+   defers public endpoint/account configuration to `astroneer playit setup` and
+   `astroneer playit configure` inside the new guest. For direct/LAN, enter the
+   endpoint requested for that mode. Direct requires your public IPv4 and
    matching forwarded UDP port. Playit requires the assigned public IPv4 and actual
    external UDP port; set the local game/tunnel origin to that same port. LAN asks
    only for the CT LAN address and local UDP port, with no public endpoint prompt. LAN is experimental.
@@ -70,7 +72,8 @@ Use mode 0600 on that file, never commit it, and remove it after provisioning.
 An identical repeated configuration reconciles services without replacing game data.
 A different existing configuration is refused; use `astroneer config FILE` for
 supported changes. Image changes use `astroneer update --image DIGEST`. Network
-mode/agent identity migration is deliberately refused and needs manual service review.
+mode/agent identity changes use the dedicated `astroneer playit setup/configure/disable`
+workflow. Existing LAN-to-Playit migration never requires manual JSON/env/INI editing.
 
 The host wizard does not modify firewall policies or create port-forwarding rules.
 No automatic CT cleanup occurs after failure. Keep its ID, inspect the cause and
@@ -115,3 +118,18 @@ watchdog/probe. See [PROTON.md](PROTON.md) for the CT 105 deployment and evidenc
 commands. `astroneer start` now waits for game-owned UDP readiness and returns failure
 on an early exit or readiness deadline, even if Node or Docker remains running.
 No native runtime libraries or machine-id settings are changed by repair.
+
+## Recommended Playit two-stage setup and CT 105 migration
+
+New Playit installations do not ask for a public IP before tunnel creation. The
+runtime is installed in `playit-pending` mode and game start/boot activation is
+deferred. Inside the guest use `astroneer playit setup`, create/link a Custom UDP
+tunnel in the official dashboard, and use `astroneer playit configure` to approve
+its assigned numerical IPv4 and port. The game and local origin use that same port.
+Agent setup installs only the reviewed agent image; it preserves the game digest.
+
+For the existing CT 105, run the updated repair script inside that guest rather
+than creating a container. See [PLAYIT.md](PLAYIT.md) for exact transfer commands,
+interactive linking, rollback and external Steam acceptance tests. The 60-second
+migration test intentionally rejects the reported 11-second game exit if it recurs;
+a public endpoint is not assumed to fix Proton/game termination.

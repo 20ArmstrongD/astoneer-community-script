@@ -58,3 +58,14 @@ inside the already-approved image. No Windows executable is passed to host ldd.
 Native Proton file logging is disabled; limited Wine error/SEH output uses the
 bounded root-private Docker sink with existing best-effort CLI redaction. No
 all-channel trace, environment dump, authentication change or game-data change is made.
+
+Playit setup requires a TTY for hidden agent-secret input; account authentication
+happens only in the provider's browser dashboard. The new unit invokes playitd with
+`--secret-path` and does not use the upstream shell entrypoint's inline secret argv.
+The key and socket directory are root-only. IPC status deliberately discards login
+links, account details and error payloads; status/test show whitelisted phase and
+parsed endpoint evidence. Agent raw logs are bounded/private and should not be shared.
+Network snapshots contain passwords and original INIs; keep them private. Existing
+backup archives are not pruned by the migration backup. Explicit --yes means the
+operator confirmed the dashboard allocation/UDP type; it grants no provider approval
+and does not convert unknown reachability or registration into a verified result.

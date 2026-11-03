@@ -32,13 +32,15 @@ astro_stop_children() {
 wait() {
   local game_pid=${p1:-} backup_pid=${p2:-}
   if [[ $# -eq 1 && $1 == -n && -n $game_pid && -n $backup_pid ]]; then
-    local monitor finished= result=0 role=unknown child
+    local monitor finished= result=0 role=unknown child running
     python3 "$astro_runtime" watch --port "${ASTRO_SERVER_PORT:-8777}" &
     monitor=$!
     astro_children=("$game_pid" "$backup_pid" "$monitor")
     while [[ -z $finished ]]; do
+      running=$(jobs -pr)
       for child in "${astro_children[@]}"; do
-        if ! kill -0 "$child" 2>/dev/null; then
+        # kill -0 alone can still succeed for a completed/zombie child.
+        if [[ $'\n'$running$'\n' != *$'\n'"$child"$'\n'* ]] || ! kill -0 "$child" 2>/dev/null; then
           finished=$child
           # Waiting inside a conditional captures zero/nonzero without ERR traps.
           if builtin wait "$child"; then

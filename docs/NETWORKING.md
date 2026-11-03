@@ -41,3 +41,18 @@ There is no reliable generic UDP "port open" test. TCP port checkers do not test
 UDP. The CLI leaves public reachability and registration at WARN/Unknown. Optionally
 consult [JoeJoeTV's checker](https://astroservercheck.joejoetv.de/) manually; no
 undocumented API, stale log string or guessed backend response is treated as proof.
+
+## Managed Playit migration
+
+`astroneer playit configure` discovers current enabled tunnel endpoints through
+local IPC, resolves hostnames to IPv4 candidates, and requires dashboard confirmation
+of Custom UDP/Proxy Protocol None. It never runs ipify or changes the CT address.
+It rejects mismatched ports; set the local origin to 127.0.0.1:EXTERNAL_PORT before
+retrying. An explicitly supplied dashboard IPv4/port must still agree with a current
+local origin and cannot override a known conflicting allocation.
+
+The Playit agent shares CT 105's network namespace with the game via Docker host
+networking. 127.0.0.1 is the guest's loopback; it is not the Proxmox host. Game-owned
+UDP readiness and endpoint/configuration match are local evidence. IPC lifecycle
+and tunnel listing do not prove relay transport connectivity; keep those checks
+separate from a real external Steam join. No inbound router rule is requested.

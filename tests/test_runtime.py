@@ -121,6 +121,11 @@ class ChildSupervision(unittest.TestCase):
         self.assertIn('ASTRONEER_CHILD_EXIT role=game-launcher status=0', output.stderr)
         self.assertNotIn('FALSE_SUCCESS', output.stdout)
 
+    def test_completed_job_detected_even_if_pid_probe_succeeds(self):
+        output = self.execute('kill() { if [[ $1 == -0 ]]; then return 0; else builtin kill "$@"; fi; }\n(exit 0) & p1=$!\n/bin/sleep 20 & p2=$!\n/bin/sleep 0.1\nwait -n\n')
+        self.assertEqual(output.returncode, 1)
+        self.assertIn('role=game-launcher status=0', output.stderr)
+
     def test_nonzero_game_exit_preserved_without_parent_err_trap(self):
         output = self.execute('(exit 23) & p1=$!\n/bin/sleep 20 & p2=$!\nwait -n\n')
         self.assertEqual(output.returncode, 23)

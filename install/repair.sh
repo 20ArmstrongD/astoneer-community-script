@@ -26,6 +26,8 @@ systemctl stop astroneer
 install -d -m 755 /usr/local/lib/astroneer
 install -m 755 "$ROOT/scripts/entrypoint-observer.sh" /usr/local/lib/astroneer/entrypoint-observer.sh
 install -m 644 "$ROOT/scripts/runtime.py" /usr/local/lib/astroneer/runtime.py
+install -m 644 "$ROOT/scripts/images.py" /usr/local/lib/astroneer/images.py
+install -m 644 "$ROOT/scripts/playit.py" /usr/local/lib/astroneer/playit.py
 install -m 644 "$ROOT/scripts/manage.py" /usr/local/lib/astroneer/manage.py
 install -m 755 "$ROOT/scripts/astroneer" /usr/local/bin/astroneer
 ln -sfn /usr/local/bin/astroneer /usr/bin/astroneer

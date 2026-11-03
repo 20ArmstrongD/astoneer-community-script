@@ -5,7 +5,7 @@ no LXC was created and no game, Docker image or Playit tunnel was executed.
 
 Executed locally:
 
-- `python3 -m unittest discover -s tests -v`: 99 offline tests passed after the Proton-supervision/readiness fix.
+- `python3 -m unittest discover -s tests -v`: 134 offline tests passed after the Playit migration revision.
 - `python3 -m py_compile scripts/*.py`: passed.
 - `bash -n install.sh install/*.sh scripts/astroneer scripts/entrypoint-observer.sh`: passed.
 
@@ -79,3 +79,22 @@ tests reject healthy-looking Docker with no game socket and clean up after a fai
 ExecStartPost. Wine/procfs/cgroup checks add no capability or data/image changes.
 No actual Proton executable crash was reproduced; its cause remains unknown until
 Wine diagnostics from the repaired deployment are examined. No CT was modified.
+
+## Playit migration revision
+
+Executed locally: 134 offline tests, Python compilation, Bash syntax, CLI help and
+whitespace checks. New fixtures cover official IPC v2 framing/version/response IDs,
+private-field omission, endpoint/mismatch validation, DNS-to-IPv4, daemon secret-file
+flags and installation, interactive/noninteractive setup, reuse of existing identity,
+LAN-to-Playit configuration, preservation of owner/password/image/save/extra env,
+agent-before-game order, occupied ports, missing tunnels, game vs agent failures,
+exact byte rollback, legacy-backup restore retaining network identity, failed rollback
+journal retention, cancellation, pending transaction recovery, no deletion of
+new game INIs, disable/pause behavior and deferred two-stage boot activation.
+
+The source/runtime verification, account linking, tunnel allocation, UDP transport,
+backend registration, 60-second real game stability and external Steam join have not
+been exercised on CT 105. ShellCheck/shfmt remain unavailable locally; CI runs them.
+A read-only remote Git check failed because shell DNS could not resolve github.com;
+see the final work report for the actual commit/push outcome. No Proxmox deployment
+or live account/tunnel operation was performed by this development agent.

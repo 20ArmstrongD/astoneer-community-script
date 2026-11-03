@@ -88,19 +88,14 @@ def select_image(kind):
 
 
 def network(c):
-    c['mode'] = ask('Network mode direct/playit/lan', 'direct')
+    c['mode'] = ask('Network mode playit/direct/lan (Playit recommended)', 'playit')
     if c['mode'] not in ('direct', 'playit', 'lan'):
         raise ValueError('Network mode must be direct, playit or lan')
     provenance = None
     if c['mode'] == 'playit':
-        print('Experimental: create/link an agent at https://playit.gg/account/setup/wizard/new-account/docker/docker-name')
-        print('Create a Custom UDP tunnel first. Read its assigned public IPv4 and actual external port from the dashboard.')
-        print('Set Proxy Protocol to None. Set the tunnel local origin to 127.0.0.1:ASSIGNED_EXTERNAL_PORT.')
-        c['public_ip'] = ask('Assigned Playit public IPv4 (not your router/outbound IPv4)')
-        c['external_port'] = number('Assigned Playit external UDP port', 8777, 1024, 65535)
-        c['port'] = number('Local game UDP port (must match assigned external port)', c['external_port'], 1024, 65535)
-        c['playit_image'], provenance = select_image('playit')
-        c['playit_secret'] = getpass.getpass('Linked agent secret: ')
+        print('Recommended two-stage setup: install the runtime now; link the account and create a Custom UDP tunnel inside the guest later.')
+        print('No public endpoint is required yet. After installation run astroneer playit setup, then astroneer playit configure.')
+        c.update(mode='playit-pending', public_ip='', port=8777, external_port=8777)
     elif c['mode'] == 'direct':
         print('Direct mode requires a public router/server IPv4. Forward UDP to the CT and allow it in the applicable firewalls.')
         print('CGNAT is not a public allocation. Local and external UDP ports must match.')
@@ -113,7 +108,10 @@ def network(c):
         c['port'] = number('Local game UDP port', 8777, 1024, 65535)
         c['external_port'] = c['port']
     validate(c)
-    print(f"Network mode={c['mode']}; local UDP=0.0.0.0:{c['port']}; advertised={c['public_ip']}:{c['external_port']}")
+    if c['mode'] == 'playit-pending':
+        print('Network setup INCOMPLETE: advertised endpoint unassigned; game startup deferred.')
+    else:
+        print(f"Network mode={c['mode']}; local UDP=0.0.0.0:{c['port']}; advertised={c['public_ip']}:{c['external_port']}")
     print('Endpoint assignment, external UDP reachability, backend registration and client join require independent verification.')
     return provenance
 
@@ -177,6 +175,8 @@ def main(argv=None):
         run(['pct', 'exec', h['id'], '--', 'tar', '-xf', '/root/astroneer-project.tar', '-C', '/root/astroneer-project'])
         run(['pct', 'exec', h['id'], '--', 'bash', '/root/astroneer-project/install/astroneer-install.sh', '/root/astroneer-config.json', '/root/astroneer-image-provenance.json'])
         print(f'Installation command completed. Verify with: pct exec {h["id"]} -- astroneer diagnostics')
+        if c['mode'] == 'playit-pending':
+            print(f'Playit setup INCOMPLETE; game intentionally stopped. Run pct enter {h["id"]}, then astroneer playit setup and astroneer playit configure.')
     except Exception:
         if created:
             print(f'Partial installation retained in CT {h["id"]}. No guest was destroyed. Inspect and rerun the guest installer after correcting the cause.', file=sys.stderr)

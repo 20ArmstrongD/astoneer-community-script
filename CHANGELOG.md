@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — unreleased
+
+- Add in-place Playit setup/status/configure/test/disable CLI commands, official
+  dashboard linking, pinned daemon installation and read-only IPC v2 status/tunnels.
+- Confirm actual public IPv4/UDP allocation and matching local origin without ISP
+  IP lookup, router rules, game-image changes or manual JSON/env/INI editing.
+- Journal network changes, preserve identity/extra env fields, take a non-pruning
+  backup and roll configuration back on failure/cancellation. Observe game stability
+  for 60 seconds, independently of agent/control health or unknown relay transport.
+- Add explicit restore --keep-network so legacy LAN backups can restore saves
+  without undoing the current endpoint/agent identity.
+- Recommend two-stage Playit installs with deferred public endpoint and game startup.
+- Install the new modules through the existing in-guest repair/upgrade script.
+- Fix completed-child supervisor polling to consult Bash's running-job table.
+- No live tunnel, CT migration, registration or Steam-client success is claimed.
+
 ## 0.1.3 — unreleased
 
 - Supervise launcher/helper completion explicitly, including zero-status and

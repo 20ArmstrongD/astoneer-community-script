@@ -166,17 +166,19 @@ class WizardTests(unittest.TestCase):
             with self.subTest(answers=answers), self.assertRaises(ValueError):
                 self.network(answers)
 
-    def test_playit_uses_actual_assigned_port(self):
-        c, proof, out = self.network(['playit', '8.8.8.8', '12345', '12345'])
-        self.assertEqual(c['port'], 12345); self.assertEqual(c['external_port'], 12345)
-        self.assertTrue(proof['approved'])
-        self.assertIn('assigned public IPv4', out)
-        self.assertIn('advertised=8.8.8.8:12345', out)
-        self.assertNotIn('a'*20, out)
+    def test_playit_defers_endpoint_to_stage_two(self):
+        c, proof, out = self.network(['playit'])
+        self.assertEqual(c['mode'], 'playit-pending')
+        self.assertEqual(c['public_ip'], '')
+        self.assertEqual(c['playit_secret'], '')
+        self.assertIsNone(proof)
+        self.assertIn('No public endpoint is required', out)
 
-    def test_playit_mismatch_refused(self):
+    def test_playit_pending_rejects_fake_endpoint(self):
+        c = dict(config(), mode='playit-pending', public_ip='')
+        host.validate(c)
         with self.assertRaises(ValueError):
-            self.network(['playit', '8.8.8.8', '12345', '8777'])
+            host.validate(dict(c, public_ip='8.8.8.8'))
 
     def test_lan_no_public_endpoint_prompt(self):
         c, proof, out = self.network(['lan', '192.168.1.105', '8777'])

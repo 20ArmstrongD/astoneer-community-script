@@ -73,3 +73,19 @@ relationship using read-only procfs, independently of the Proton launcher's life
 The systemd ExecStartPost gate uses the same evidence before activation; ExecStopPost
 also stops a leftover Docker workload after failed activation. No image rebuild,
 machine-id injection, library installation or capability/security changes occur.
+
+## Playit migration revision
+
+The existing guest can now be migrated without the host wizard. The agent is a
+separate digest-pinned systemd/Docker workload with guest host networking, dropped
+capabilities and no-new-privileges. Direct daemon secret-file flags avoid exposing
+its secret in argv. A private IPC v2 client inspects status/tunnels; dashboard
+linking and Custom UDP creation remain explicit operator actions. Only provider
+interfaces verified in upstream source are implemented; unknown protocol versions
+fail closed and transport reachability is not inferred from daemon lifecycle.
+
+New installs default to a two-stage pending mode. Existing migration journals exact
+network/config files, takes a non-pruning backup, sets agent-before-game ordering,
+applies the confirmed allocation and tests local stability for 60 seconds. Failure
+restores configuration while preserving saves/evidence and leaves services stopped.
+The game digest, Wine supervisor, cgroup diagnostics and LXC permissions are retained.

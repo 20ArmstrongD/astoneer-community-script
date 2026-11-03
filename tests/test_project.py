@@ -100,6 +100,18 @@ class Operations(unittest.TestCase):
         self.assertEqual((self.saved/'SaveGames/SAVE_1.savegame').read_bytes(), b'original save')
         self.assertEqual(len(list(self.back.glob('*.tar.gz'))), 2)
 
+    def test_old_backup_restore_can_preserve_current_playit_endpoint(self):
+        p = m.backup(config())
+        current = dict(config(), mode='playit', public_ip='8.8.4.4', port=12345, external_port=12345,
+                       playit_image='ghcr.io/playit-cloud/playit-agent@sha256:'+'b'*64, playit_secret='agent-secret-12345')
+        m.atomic(self.conf, json.dumps(current))
+        with patch.object(m, 'apply') as apply, patch.object(m, 'run', return_value=result()):
+            m.restore(p, current, keep_network=True)
+        restored = apply.call_args.args[0]
+        self.assertEqual(restored['public_ip'], '8.8.4.4')
+        self.assertEqual(restored['port'], 12345)
+        self.assertEqual(restored['playit_secret'], current['playit_secret'])
+
     def test_corrupt_archive(self):
         p = m.backup(config()); p.write_bytes(b'broken')
         with self.assertRaises(ValueError):
@@ -201,6 +213,12 @@ class Operations(unittest.TestCase):
         with patch.object(m.os, 'geteuid', return_value=0), patch.object(m, 'run', return_value=result('false')), patch.object(m, 'backup') as backup:
             self.assertEqual(m.main(['prestart']), 0)
         backup.assert_called_once()
+
+    def test_network_migration_prestart_never_prunes_old_backups(self):
+        m.atomic(self.conf.parent/'network-transaction.json', '{}')
+        with patch.object(m.os, 'geteuid', return_value=0), patch.object(m, 'run', return_value=result('false')), patch.object(m, 'backup') as backup:
+            self.assertEqual(m.main(['prestart']), 0)
+        backup.assert_called_once_with(config(), prune=False)
 
     def test_missing_tools_still_diagnostic_json(self):
         m.atomic(self.conf.parent/'server.env', m.env(config()))

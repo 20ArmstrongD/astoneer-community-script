@@ -29,13 +29,15 @@ The template above illustrates the format; it is not a claim that this version i
 available. Supply an existing template. Default setup uses local-lvm and vmbr0;
 advanced setup configures CT ID, storage, hostname, CPU, RAM, swap, disk, bridge,
 DHCP/static IPv4, VLAN and DNS. Both modes ask for game identity, hidden password,
-boot policy and network endpoint. The wizard resolves the publisher image tag
+boot policy and network mode. Playit is recommended and defers account/tunnel/endpoint
+configuration to stage two inside the guest; no public IP is required to create
+the new runtime. Direct and LAN retain their endpoint prompts. The wizard resolves the publisher image tag
 (default `latest`) from Docker Hub, verifies SHA-256 metadata and linux/amd64,
 displays source/registry/digest/runtime metadata, and requires typing `APPROVE`.
 No manual digest lookup or Docker installation on the Proxmox host is needed.
 The approved immutable platform digest, rather than the moving tag, is installed.
 Registry lookup failure or refusal stops before CT creation. Playit uses the same
-approval flow against its official GHCR repository. No existing
+approval flow against its official GHCR repository during `astroneer playit setup`. No existing
 CT/VM is modified; failed new guests are retained for inspection. Host installation
 is interactive. Guest provisioning accepts a private JSON file for automation.
 
@@ -53,6 +55,11 @@ astroneer repair
 astroneer diagnostics
 astroneer diagnostics --json
 astroneer config
+astroneer playit setup
+astroneer playit status
+astroneer playit configure
+astroneer playit test
+astroneer playit disable
 astroneer config /root/reviewed-config.json
 astroneer backup
 astroneer update --image barumel/docker-astroneer-server@sha256:REVIEWED_DIGEST
@@ -79,10 +86,13 @@ with the game version that Steam supplies.
 
 [Networking](docs/NETWORKING.md) explains public IPv4 forwarding, LAN limitations
 and the separation of local socket health, external reachability, registration
-and successful player connection. [Playit](docs/PLAYIT.md) is optional and
-experimental: use the assigned public IPv4 and actual external UDP port. Different
-external/local ports are rejected. LAN-only deployment is available for investigation
-but may not permit client joins because public registration is still required.
+and successful player connection. [Playit](docs/PLAYIT.md) now provides an in-place
+account/agent setup and LAN-to-public-endpoint migration. It preserves the game image,
+identity/password, saves and unrelated environment settings; uses the actual assigned
+IPv4 and arbitrary external port; and requires matching local/tunnel ports. A failed
+60-second local stability test rolls network configuration back. Relay transport,
+registration and external Steam join remain separate, unverified acceptance tests.
+LAN-only remains experimental because public backend registration may be required.
 
 [Architecture](docs/ARCHITECTURE.md), [crossplay](docs/CROSSPLAY.md),
 [security](docs/SECURITY.md), and [troubleshooting](docs/TROUBLESHOOTING.md) document
@@ -136,3 +146,9 @@ imports without installing packages. Neither warning is assumed to cause a crash
 [PROTON.md](docs/PROTON.md) explains supervision, readiness and read-only evidence.
 Memory diagnostics use the minimum visible cgroup ancestor limit and report the
 LXC init limit separately; host MemTotal is never used as the container limit.
+
+For the existing CT 105 on commit 084f8fe, use the updated `install/repair.sh` as the
+in-place management upgrade, then `astroneer playit setup` and `configure` inside the
+guest. Do not run the host creation wizard. The exact transfer, account-linking,
+Custom UDP creation, rollback and external Steam test commands are in
+[PLAYIT.md](docs/PLAYIT.md). No router forwarding or LXC address changes are made.
