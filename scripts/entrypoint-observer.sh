@@ -32,7 +32,7 @@ astro_stop_children() {
 wait() {
   local game_pid=${p1:-} backup_pid=${p2:-}
   if [[ $# -eq 1 && $1 == -n && -n $game_pid && -n $backup_pid ]]; then
-    local monitor finished= result=0 role=unknown child running
+    local monitor finished='' result=0 role=unknown child running
     python3 "$astro_runtime" watch --port "${ASTRO_SERVER_PORT:-8777}" &
     monitor=$!
     astro_children=("$game_pid" "$backup_pid" "$monitor")
@@ -78,7 +78,12 @@ wait() {
 trap 'astro_failure "$?" "$LINENO" "$BASH_COMMAND" "${BASH_SOURCE[0]}"' ERR
 trap 'astro_stop_children; exit 143' TERM
 trap 'astro_stop_children; exit 130' INT
-trap 'astro_result=$?; astro_stop_children; printf "ASTRONEER_ENTRYPOINT_EXIT status=%s\n" "$astro_result" >&2' EXIT
+astro_exit() {
+  local result=$1
+  astro_stop_children
+  printf 'ASTRONEER_ENTRYPOINT_EXIT status=%s\n' "$result" >&2
+}
+trap 'astro_exit "$?"' EXIT
 # Send Wine errors/SEH to the already bounded Docker stdout/stderr log sink.
 # Native PROTON_LOG writes unbounded files and can dump more diagnostic metadata.
 # Do not change fsync/esync, the Wine prefix, machine-id or runtime libraries.
