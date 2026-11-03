@@ -1,0 +1,64 @@
+# Troubleshooting and recovery
+
+Start with `astroneer diagnostics` or `--json`. Exit 1 means a detected FAIL or an
+operational error; WARN may accompany exit 0 because several external states cannot
+be tested. Invalid command syntax returns argparse exit 2. Mutation commands require
+root and serialize through a nonblocking lock; another active operation returns an
+error rather than racing. Use the CLI for normal operations.
+
+`astroneer status` reports systemd; `astroneer logs` gives recent error/fatal line
+counts from at most the last 64 KiB of the newest game log. This is a heuristic,
+not an error parser. No logs found is not evidence of healthy startup. Inspect
+`/var/lib/astroneer/game/Astro/Saved/Logs` privately if needed; never post raw logs.
+Service output is intentionally suppressed to protect upstream secrets.
+
+Docker errors in an unprivileged CT: inspect `journalctl -u docker` locally, host
+kernel/AppArmor versions and storage compatibility. Do not disable security or
+make the CT privileged. The installer retains failed guests; use a separately
+approved environment if nested Docker remains incompatible. No VM is silently made.
+
+First launch: allow time for SteamCMD downloads and initial game-generated INI files.
+The upstream initialization launches the server before applying environment settings;
+its completion and behavior under this host require real-world testing. A missing
+listener can mean initialization, a crash, or incompatible Proton. Verify the actual
+pinned image's runtime and upstream issue tracker. Do not delete game volumes to
+force an update. Disk free space must cover saves, retained backups and restore staging.
+
+Updates: `astroneer update --image FULL_REVIEWED_DIGEST` pulls first, stops the service,
+backs up Saved/config, changes the pin and returns the previous running/stopped state.
+Every subsequent launch also backs up before upstream updates game content. Image
+pinning does not pin the Steam game version. Backup retention is a count; repeated
+restarts can evict older backups. Copy a known-good backup off the guest before an
+update or restore. A failed restart is an error, not a rolled-back installation.
+Restore a compatible save/config backup and choose a known-good reviewed image as
+needed; game-depot rollback is not implemented.
+
+Backup files are timestamped UTC `.tar.gz` archives with `.tar.gz.sha256` sidecars
+under `/var/backups/astroneer`. Copy both. They contain Saved (saves, game INIs and
+logs) and configuration; runtime binaries/SteamCMD/Proton prefix are outside scope.
+Backups stop the game first, so they are filesystem consistent, but upstream's
+signal handling has not been verified to save the last in-memory changes. Wait for
+an autosave/perform an in-game save before taking a manual backup.
+
+Restore with `astroneer restore PATH` and type RESTORE, or use `--yes` for automation.
+A pre-restore backup is made before replacement. Existing agent identity/network mode
+must match; cross-agent migration is refused. Whole-guest recovery is required for
+runtime corruption. Keep saves compatible with the current game's format.
+
+After an interrupted restore, stop only the affected guest's game service. Preserve
+both `game/Astro/Saved` and `game/Astro/Saved.rollback` off-host. Inspect their contents
+and selected backup, then have an administrator choose which tree to keep. The CLI
+refuses a second restore while Saved.rollback exists. Do not blindly remove it.
+
+Partial installation: config.json is the final configuration commit marker. Rerunning
+the guest installer reconciles an identical installed configuration. Failures before
+that marker retain data and can be retried using the original private configuration.
+Failures after service start require diagnostics/recovery, not claiming success.
+A failed image pull leaves the old service/config untouched. Config changes are
+atomic per file, not a multi-file transaction across power loss; rerun provisioning
+with the intended private configuration after inspecting all installed files.
+
+Cannot join: confirm actual public IPv4/port, local UDP, router/CT firewall, NAT
+hairpinning or tunnel allocation, backend registration, game/client version and
+client encryption independently. CGNAT and Xbox policy are not solved by a local
+listener. Unknown registration remains unknown until independently checked.
