@@ -98,7 +98,9 @@ of up to 5000 log lines are archived; three such attempts are retained under
 `/var/log/astroneer` with root-only access. No game auto-restart loop is configured.
 
 A read-only observer sources the pinned image's upstream entrypoint, reports failed
-command stage/line/exit status, and preserves the original nonzero exit. It does not
+command stage/line/exit status, and supervises its game/helper children explicitly.
+A clean early launcher exit is also a service failure; a game-process/owned-UDP
+watchdog prevents a surviving Node helper from appearing healthy. It does not
 ignore SteamCMD errors or regenerate initialization markers. See
 [startup investigation and existing-deployment repair](docs/STARTUP.md).
 
@@ -106,7 +108,9 @@ To repair installed management files from a reviewed checkout **inside the exist
 guest**, run `bash install/repair.sh`. This stops the old restart loop and updates
 managed code/unit/PATH entries without pulling an image, upgrading Docker or replacing
 configuration/data. It leaves the game stopped. Run `astroneer start` once and inspect
-`astroneer logs` and `astroneer diagnostics`. The `--start` option requests that one
+`astroneer logs` and `astroneer diagnostics`. The start command now waits for two
+samples of an actual game PID owning the configured IPv4 UDP socket; a timeout or
+premature exit fails activation. Backend registration remains a separate test. The `--start` option requests that one
 attempt immediately. `/usr/bin/astroneer` also works with a minimal `pct enter` PATH.
 
 Run offline checks with `python3 -m unittest discover -s tests -v` and
@@ -124,3 +128,11 @@ verify identity, not signatures or source correspondence. See
 
 Thanks to barumel, JoeJoeTV, tteck and Community Scripts. This repository is not
 an official Community Scripts installer. A framework port must begin in DevScripts.
+
+Proton/Wine startup investigation: the observer enables bounded stderr error/SEH
+logging instead of unbounded native Proton log files. The runtime audit checks
+machine-id presence/format without printing its value and reports missing ELF
+imports without installing packages. Neither warning is assumed to cause a crash.
+[PROTON.md](docs/PROTON.md) explains supervision, readiness and read-only evidence.
+Memory diagnostics use the minimum visible cgroup ancestor limit and report the
+LXC init limit separately; host MemTotal is never used as the container limit.

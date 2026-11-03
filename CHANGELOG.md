@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 — unreleased
+
+- Supervise launcher/helper completion explicitly, including zero-status and
+  already-finished game exits, without relying on a Bash ERR trap.
+- Fail on real game disappearance or owned-UDP loss even if Node/Proton remain alive.
+- Gate systemd activation on actual game-owned IPv4 UDP readiness and clean up
+  Docker after failed activation; preserve no-retry policy and pinned images.
+- Capture Wine error/SEH diagnostics in bounded Docker logs; audit machine-id and
+  ELF imports without claiming either causes the live exit or changing the runtime.
+- Resolve effective visible ancestor cgroup memory limits and LXC init limits.
+- Extend in-place repair to install the read-only watchdog/probe module.
+
 ## 0.1.2 — unreleased
 
 - Enable rotating game Docker json-file logs (10m × 3), redacted CLI log viewing,

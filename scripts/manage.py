@@ -19,7 +19,9 @@ import tarfile
 import tempfile
 import time
 
-VERSION = '0.1.2'
+from runtime import memory_info
+
+VERSION = '0.1.3'
 BASE = Path('/var/lib/astroneer')
 CONF = Path('/etc/astroneer/config.json')
 BACK = Path('/var/backups/astroneer')
@@ -129,11 +131,12 @@ StartLimitBurst=3
 Type=simple
 ExecStartPre=/usr/bin/python3 /usr/local/lib/astroneer/manage.py prepare
 ExecStartPre=/usr/bin/python3 /usr/local/lib/astroneer/manage.py prestart
-ExecStart=/usr/bin/docker run --attach stdout --name {NAME} --user steam --network host --cap-drop ALL --security-opt no-new-privileges --env-file /etc/astroneer/server.env --mount type=bind,src=/var/lib/astroneer/game,dst=/astroneer --mount type=bind,src=/var/lib/astroneer/steamcmd,dst=/steamcmd --mount type=bind,src=/var/lib/astroneer/upstream-backup,dst=/backup --mount type=bind,src=/usr/local/lib/astroneer/entrypoint-observer.sh,dst=/run/astroneer-observer.sh,readonly --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --entrypoint /bin/bash {image} /run/astroneer-observer.sh
+ExecStart=/usr/bin/docker run --attach stdout --name {NAME} --user steam --network host --cap-drop ALL --security-opt no-new-privileges --env-file /etc/astroneer/server.env --mount type=bind,src=/var/lib/astroneer/game,dst=/astroneer --mount type=bind,src=/var/lib/astroneer/steamcmd,dst=/steamcmd --mount type=bind,src=/var/lib/astroneer/upstream-backup,dst=/backup --mount type=bind,src=/usr/local/lib/astroneer/entrypoint-observer.sh,dst=/run/astroneer-observer.sh,readonly --mount type=bind,src=/usr/local/lib/astroneer/runtime.py,dst=/run/astroneer-runtime.py,readonly --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --entrypoint /bin/bash {image} /run/astroneer-observer.sh
 ExecStop=/usr/bin/docker stop --time 120 {NAME}
 TimeoutStopSec=150
+ExecStartPost=/usr/bin/python3 /usr/local/lib/astroneer/manage.py wait-ready
 TimeoutStartSec=900
-ExecStopPost=/usr/bin/python3 /usr/local/lib/astroneer/manage.py report
+ExecStopPost=/usr/bin/python3 /usr/local/lib/astroneer/manage.py finish
 Restart=no
 StandardOutput=null
 StandardError=journal
@@ -275,6 +278,54 @@ def report(c):
         print('No automatic retry. Review logs before astroneer start. UDP/registration are not proven.', file=sys.stderr)
 
 
+def finish(c):
+    # ExecStop is not guaranteed when ExecStartPost fails. Do not leave the Docker
+    # workload running after a failed readiness check or lost foreground client.
+    state = state_info()
+    if state and state.get('Running'):
+        run(['docker', 'stop', '--time', '30', NAME], False)
+    report(c)
+
+
+def runtime_probe(port):
+    try:
+        output = run(['docker', 'exec', NAME, 'python3', '/run/astroneer-runtime.py', 'probe', '--port', str(port)], False)
+        data = json.loads(output.stdout) if output.returncode == 0 else None
+        if not isinstance(data, dict) or type(data.get('ready')) is not bool:
+            return None
+        if data['ready'] and (not data.get('game_pids') or data.get('game_owned_udp') is not True or data.get('udp_port') != port):
+            return None
+        return data
+    except (ValueError, OSError):
+        return None
+
+
+def runtime_audit():
+    try:
+        output = run(['docker', 'exec', NAME, 'python3', '/run/astroneer-runtime.py', 'audit'], False)
+        data = json.loads(output.stdout) if output.returncode == 0 else None
+        return data if isinstance(data, dict) else None
+    except (ValueError, OSError):
+        return None
+
+
+def wait_ready(c, timeout=840, interval=2):
+    deadline = time.monotonic() + timeout
+    consecutive = 0
+    while time.monotonic() < deadline:
+        state = state_info()
+        if state is not None and not state.get('Running'):
+            raise RuntimeError('Game container exited before UDP readiness; inspect astroneer logs for child exit status and Wine diagnostics')
+        evidence = runtime_probe(c['port']) if state and state.get('Running') else None
+        consecutive = consecutive + 1 if evidence and evidence.get('ready') else 0
+        if consecutive >= 2:
+            print(f'Local readiness: actual game owns IPv4 UDP {c["port"]}; backend registration remains unknown')
+            return
+        time.sleep(interval)
+    run(['docker', 'stop', '--time', '30', NAME], False)
+    raise RuntimeError('Readiness deadline exceeded: actual game did not retain ownership of the configured UDP socket; inspect astroneer logs. Docker health is not readiness.')
+
+
 def repair(c, start=False):
     if not (CONF.parent / 'server.env').is_file():
         raise ValueError('Existing server.env is missing; inspect configuration manually before repair')
@@ -286,7 +337,7 @@ def repair(c, start=False):
     print('Service repaired and stopped. Configuration, image pin and data preserved. Logs become available after one new start.')
     if start:
         run(['systemctl', 'start', 'astroneer'])
-        print('One startup attempt launched; inspect astroneer logs and diagnostics. Process launch is not readiness.')
+        print('One startup attempt completed local UDP readiness checks; verify backend/client connectivity separately.')
 
 
 def pull_verified(image, proof=None):
@@ -484,23 +535,23 @@ def diagnostics(c, as_json):
     p = probe(['systemd-detect-virt', '--container'])
     add('container', 'PASS' if p.stdout.strip() == 'lxc' else 'WARN', p.stdout.strip() or 'not detected')
     add('resources', 'PASS' if (os.cpu_count() or 0) >= 2 and shutil.disk_usage(BASE).free > 2**30 else 'WARN', f'CPUs={os.cpu_count()}, free_disk_bytes={shutil.disk_usage(BASE).free}; see /proc/meminfo and cgroup memory.max for LXC limit')
-    limits = []
-    for path in ('/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
-        try:
-            limits.append(Path(path).read_text().strip())
-        except OSError:
-            pass
-    add('memory', 'WARN' if not limits or any(v.isdigit() and int(v) < 4 * 1024**3 for v in limits) else 'PASS', 'cgroup limits bytes=' + ','.join(limits))
+    memory = memory_info()
+    effective = memory['effective_limit_bytes']
+    add('memory', 'PASS' if effective is not None and effective >= 4 * 1024**3 else 'WARN', json.dumps(memory))
     for label, args in [('runtime', ['docker', 'info']), ('service', ['systemctl', 'is-active', '--quiet', 'astroneer'])]:
         add(label, 'PASS' if probe(args).returncode == 0 else 'FAIL', 'Command health check')
     p = probe(['docker', 'inspect', '--format', '{{.State.Running}}', NAME])
     add('process', 'PASS' if p.stdout.strip() == 'true' else 'FAIL', 'Container running is not backend registration')
     game = probe(['docker', 'top', NAME, '-eo', 'comm'])
     found_game = any('AstroServer' in line for line in game.stdout.splitlines())
-    add('game_process', 'PASS' if found_game else 'WARN', 'AstroServer executable seen in process names' if found_game else 'Game executable not observed; initialization or failure possible')
+    add('game_process', 'PASS' if found_game else 'FAIL', 'AstroServer executable seen in process names' if found_game else 'Game executable not observed; initialization or failure possible')
     p = probe(['ss', '-H', '-lun'])
     listening = any(re.search(rf':{c["port"]}\s', line) for line in p.stdout.splitlines())
     add('udp_listener', 'PASS' if listening else 'WARN', f'Local UDP {c["port"]}; socket ownership not proven')
+    evidence = runtime_probe(c['port'])
+    add('game_readiness', 'PASS' if evidence and evidence.get('ready') else 'FAIL', 'Actual game PID owns configured IPv4 UDP socket; backend unknown' if evidence and evidence.get('ready') else 'Game process/socket ownership not established; Docker/systemd health alone is insufficient')
+    audit = runtime_audit()
+    add('proton_runtime', 'WARN' if not audit or audit.get('machine_id') != 'valid' or any(d.get('missing') for d in audit.get('dependencies', [])) else 'PASS', json.dumps(audit) if audit else 'Runtime audit unavailable; read ASTRONEER_RUNTIME_AUDIT in startup logs. Missing machine-id causality remains unknown.')
     ips = probe(['hostname', '-I']).stdout.strip()
     add('endpoint', 'WARN' if c['mode'] == 'lan' else 'PASS', f'local={ips}; configured={c["public_ip"]}:{c["external_port"]}; assignment must be checked in provider/router')
     if c['mode'] == 'playit':
@@ -565,7 +616,7 @@ def parser():
     d = s.add_parser('logs', help='Read redacted startup/game logs'); d.add_argument('--tail', type=int, default=200)
     group = d.add_mutually_exclusive_group(); group.add_argument('--previous', action='store_true'); group.add_argument('--game', action='store_true')
     d = s.add_parser('repair', help='Repair the unit while preserving configuration/data'); d.add_argument('--start', action='store_true')
-    for internal in ('prepare', 'report'):
+    for internal in ('prepare', 'report', 'finish', 'wait-ready'):
         s.add_parser(internal)
     d = s.add_parser('diagnostics', help='Check process, UDP and startup evidence'); d.add_argument('--json', action='store_true')
     d = s.add_parser('update', help='Update to an explicitly pinned image'); d.add_argument('--image', required=True)
@@ -590,8 +641,8 @@ def main(argv=None):
             raise ValueError('--tail must be between 1 and 5000')
         show_logs(load(), a.tail, a.previous, a.game)
         return 0
-    if a.cmd in ('prepare', 'report'):
-        (prepare if a.cmd == 'prepare' else report)(load())
+    if a.cmd in ('prepare', 'report', 'finish', 'wait-ready'):
+        {'prepare': prepare, 'report': report, 'finish': finish, 'wait-ready': wait_ready}[a.cmd](load())
         return 0
     if a.cmd == 'prestart':
         run(['docker', 'info'])
@@ -612,7 +663,7 @@ def main(argv=None):
             result = run(['systemctl', a.cmd, 'astroneer'], False)
             print(redact(result.stdout.strip(), c) or f'{a.cmd}: exit {result.returncode}')
             if a.cmd in ('start', 'restart'):
-                print('Inspect astroneer logs and diagnostics; systemd accepting a request does not prove readiness. Automatic retries are disabled.' if result.returncode == 0 else 'Start request failed; inspect journalctl -u astroneer and astroneer logs before retrying.')
+                print('Local game/UDP startup checks completed; verify diagnostics and backend/client connectivity separately. Automatic retries are disabled.' if result.returncode == 0 else 'Start request failed; inspect journalctl -u astroneer and astroneer logs before retrying.')
             return result.returncode
         if a.cmd == 'repair':
             repair(c, a.start); return 0

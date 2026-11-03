@@ -65,3 +65,12 @@ Cannot join: confirm actual public IPv4/port, local UDP, router/CT firewall, NAT
 hairpinning or tunnel allocation, backend registration, game/client version and
 client encryption independently. CGNAT and Xbox policy are not solved by a local
 listener. Unknown registration remains unknown until independently checked.
+
+A running Node backup process or Docker container is not game health. If Proton/fsync
+initializes and AstroServer disappears, use the in-place [Proton supervision repair](PROTON.md).
+The launcher status is captured explicitly; game disappearance can fail the service
+even when the launcher does not return. Start waits for game-owned IPv4 UDP readiness.
+Do not treat a machine-id warning as the root cause or remove the initialized marker
+without evidence. The runtime audit and Wine error/SEH output are now in startup logs.
+Memory diagnostics resolve ancestor cgroup limits and show the LXC init limit;
+unknown/hidden limits are reported as unknown instead of substituting host RAM.

@@ -162,7 +162,7 @@ class StartupOperations(unittest.TestCase):
 
     def test_unit_keeps_security_and_forensics(self):
         text = m.unit(config()['image'])
-        for fragment in ('--user steam', '--cap-drop ALL', '--security-opt no-new-privileges', '--log-driver json-file', 'max-size=10m', 'max-file=3', 'Restart=no', 'manage.py prepare', 'manage.py report', '--attach stdout', '--entrypoint /bin/bash'):
+        for fragment in ('--user steam', '--cap-drop ALL', '--security-opt no-new-privileges', '--log-driver json-file', 'max-size=10m', 'max-file=3', 'Restart=no', 'manage.py prepare', 'manage.py finish', '--attach stdout', '--entrypoint /bin/bash'):
             self.assertIn(fragment, text)
         self.assertNotIn('--rm ', text)
         self.assertNotIn('--privileged', text)

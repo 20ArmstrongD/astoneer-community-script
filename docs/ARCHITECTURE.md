@@ -61,3 +61,15 @@ entrypoint invocation for observation while retaining the image digest and all e
 mounts/security restrictions. Recent evidence is archived before Docker container
 replacement; persistent game directories are never removed. See STARTUP.md for the
 unverified live cause and deployment repair procedure.
+
+## Runtime supervision revision
+
+The observer intercepts the inspected entrypoint's runtime `wait -n` handoff using
+its game/helper PIDs. It polls for completion and explicitly waits each exited PID,
+including already-finished zero-status children, then terminates remaining children
+and returns a service failure. This avoids the upstream final wait with only Node
+remaining. A Python watchdog checks the actual Wine game process and owns-socket
+relationship using read-only procfs, independently of the Proton launcher's lifetime.
+The systemd ExecStartPost gate uses the same evidence before activation; ExecStopPost
+also stops a leftover Docker workload after failed activation. No image rebuild,
+machine-id injection, library installation or capability/security changes occur.

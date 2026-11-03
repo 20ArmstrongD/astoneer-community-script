@@ -4,7 +4,8 @@
 
 The operator reports PVE 9.0.3, Debian 12 unprivileged CT 105, Docker 20.10.24 and
 Proton 10-27. Provisioning, image/game download, initial Proton execution and creation
-of WindowsServer INIs succeeded. Subsequent startup exits 1 with no UDP listener.
+of WindowsServer INIs succeeded. The follow-up report confirms configuration and the backup helper start, then
+AstroServer disappears with no UDP listener while Docker can remain active.
 These observations do not identify the failing command or establish registration.
 The repository fix has not been applied to that live guest by the development agent.
 
@@ -35,15 +36,20 @@ Docker's own log files must be managed through Docker, not edited directly.
 [Docker logging documentation](https://docs.docker.com/engine/logging/drivers/json-file/).
 
 The service uses `Restart=no` and permits at most three explicit starts per five
-minutes. A failed Docker container remains for inspection. `ExecStopPost` reports
+minutes. A failed Docker container remains for inspection. An ExecStartPost readiness gate
+keeps systemd activating until the actual game owns the configured UDP socket in
+two samples. The watchdog fails on game disappearance or sustained socket loss;
+the helper alone cannot keep the service healthy. `ExecStopPost` reports
 container status, exit code, OOM state and any observed failure stage. If Docker
 fails before creating a container, inspect `journalctl -u astroneer` for its launch
-error or a failed pre-start/archive/backup. Starting the service returns when the
-process launches; it does not wait for a UDP listener or backend readiness.
+error or a failed pre-start/archive/backup. Starting the service now waits for local process/socket readiness. This does not
+verify external UDP reachability or backend registration.
 
 A root-owned read-only observer is mounted into the game container and launched by
 Bash. It sources `/usr/bin/entrypoint.sh` from the same pinned image with ERR tracing,
-without xtrace or an entrypoint copy. Nonzero status is preserved. A failure marker
+without xtrace or an entrypoint copy. Its runtime wait function explicitly waits for
+the Proton launcher, helper and watchdog, capturing statuses without relying on ERR.
+Nonzero launcher status is preserved; unexpected zero exits become service exit 1. A failure marker
 contains exit status, source basename, line and a whitelisted stage:
 
 | Stage | Command identified |
@@ -60,6 +66,10 @@ Explicit `exit` and signals may only produce an entrypoint-exit marker or Docker
 exit state. No marker is not proof of success. Stage markers describe the command
 boundary, not necessarily the root cause inside SteamCMD/Proton/Node. A zero child
 exit can also end the upstream process without proving a functioning game server.
+
+New child-exit markers also report `role=game-launcher`, `backup-helper` or
+`game-watchdog` with that child's status. A watchdog status is not a fabricated
+Windows exit code. See [PROTON.md](PROTON.md) for the precise evidence and deadlines.
 
 The observer changes the shell invocation while keeping the pinned image, steam user,
 capability restrictions, no-new-privileges and persistent mounts. Test its live behavior
@@ -117,6 +127,8 @@ start. The CLI applies best-effort redaction of configured passwords/agent secre
 common token/password key formats and terminal control sequences. Docker's raw
 logs can contain credentials: keep them private and review redacted output before
 sharing. `logs --tail` accepts 1–5000; views and archives are bounded to 2 MiB.
+Wine error/SEH output now reaches these same bounded logs; native PROTON_LOG file
+logging is disabled. A machine-id warning alone is not a root-cause diagnosis.
 Diagnostic JSON includes no raw log text and keeps UDP, registration and client
 connection evidence separate.
 

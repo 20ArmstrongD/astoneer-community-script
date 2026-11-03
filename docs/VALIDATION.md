@@ -5,7 +5,7 @@ no LXC was created and no game, Docker image or Playit tunnel was executed.
 
 Executed locally:
 
-- `python3 -m unittest discover -s tests -v`: 77 offline tests passed after the startup-observability fix.
+- `python3 -m unittest discover -s tests -v`: 99 offline tests passed after the Proton-supervision/readiness fix.
 - `python3 -m py_compile scripts/*.py`: passed.
 - `bash -n install.sh install/*.sh scripts/astroneer scripts/entrypoint-observer.sh`: passed.
 
@@ -66,3 +66,16 @@ No live CT, pinned image, game startup, Docker logging rotation or UDP/client co
 was tested here. ShellCheck/shfmt remain unavailable locally; CI includes both and
 now covers the new observer and repair scripts. The underlying live failing command
 remains unidentified until the administrator captures one instrumented attempt.
+
+## Proton supervision and readiness revision
+
+Executed: 99 offline tests, Python compilation, Bash syntax and whitespace checks.
+The new tests run real Bash children and assert captured zero/nonzero status even
+for an already-finished launcher, a surviving helper and a watchdog-detected exit.
+Linux procfs fixtures distinguish game-owned UDP from helper/unrelated sockets and
+exclude zombie processes. Cgroup v1/v2 fixtures verify finite ancestor inheritance,
+mount-root mapping, tighter scoped limits and unknown/unlimited reporting. Readiness
+tests reject healthy-looking Docker with no game socket and clean up after a failed
+ExecStartPost. Wine/procfs/cgroup checks add no capability or data/image changes.
+No actual Proton executable crash was reproduced; its cause remains unknown until
+Wine diagnostics from the repaired deployment are examined. No CT was modified.

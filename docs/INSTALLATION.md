@@ -109,3 +109,9 @@ configuration, image pin, Docker version and data, leaves the service stopped, a
 installs `/usr/bin/astroneer` for the default `pct enter` PATH. Repeating repair is safe.
 A repeated guest installation with the identical private configuration also reconciles
 the unit and makes one start attempt, but may run apt; use repair to avoid that.
+
+The current repair includes explicit game-child supervision and a read-only runtime
+watchdog/probe. See [PROTON.md](PROTON.md) for the CT 105 deployment and evidence
+commands. `astroneer start` now waits for game-owned UDP readiness and returns failure
+on an early exit or readiness deadline, even if Node or Docker remains running.
+No native runtime libraries or machine-id settings are changed by repair.

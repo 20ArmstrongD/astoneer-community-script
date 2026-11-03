@@ -48,3 +48,13 @@ Normal exceptions roll back restore renames; power loss/SIGKILL can leave
 `Saved.rollback`. Never delete it blindly. Follow recovery instructions. Whole-guest
 backups on separate storage are recommended before runtime changes. No capability
 settings compensate for unverified LXC compatibility or unsupported console policy.
+
+Runtime supervision reads process names, non-zombie state, socket inodes and FD links
+inside the Docker PID namespace. It requires no ptrace capability or privileged
+container. Socket ownership that cannot be established fails readiness; permissions
+are never relaxed to force a pass. Machine-id diagnostics show only validity status,
+never the ID. ELF dependency checks run ldd only against known Proton ELF paths
+inside the already-approved image. No Windows executable is passed to host ldd.
+Native Proton file logging is disabled; limited Wine error/SEH output uses the
+bounded root-private Docker sink with existing best-effort CLI redaction. No
+all-channel trace, environment dump, authentication change or game-data change is made.
